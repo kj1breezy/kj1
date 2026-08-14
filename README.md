@@ -1,4 +1,4 @@
-# LEDGER — Private Trading Journal
+# RAVE — Private Trading Journal
 
 A personal trading journal, log, and control system: dashboard with equity curve and behavioral analytics, full trade log, P&L calendar, a macro economic calendar cross-referenced against your own trade notes, prop-firm account/drawdown tracking, and a local rule-based Coach that reads your actual trade history for patterns — no external AI calls, no data leaving your device unless you connect Drive sync yourself.
 

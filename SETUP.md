@@ -1,4 +1,4 @@
-# LEDGER — Setup Guide
+# RAVE — Setup Guide
 
 This turns the app into something installed on your iPhone, MacBook Air, and PC, with your trades syncing privately between all three through your own Google Drive. Nothing here goes through Anthropic, Claude, or any third-party server you don't control — the only outside service involved is Google Drive, and only if you choose to connect it.
 

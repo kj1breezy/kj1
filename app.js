@@ -1008,6 +1008,23 @@
   }) : [];
   function eventsForTrade(t) { return window.CoachEngine ? window.CoachEngine.eventsForTrade(t) : []; }
 
+  // General educational context on what each release is and how it has historically
+  // tended to ripple through equity index futures. This is background on typical
+  // market mechanics, not a prediction or signal for any specific upcoming print.
+  var EVENT_INFO = {
+    'FOMC': "The Fed's rate decision and Powell press conference. Markets reprice the expected rate path around this event, and hawkish or dovish surprises can move all three indices sharply within minutes of the statement and again during Q&A. NQ tends to see the largest swings since higher-duration mega-cap tech is most sensitive to rate expectations; YM (industrials/financials-heavy) is usually the most muted; ES sits in between as the broad benchmark.",
+    'CPI': "Monthly inflation report. A hotter-than-expected print raises the odds of higher-for-longer rates and tends to pressure all three indices — again hardest on NQ given its long-duration growth concentration. A cooler print is typically read as dovish and can lift index futures broadly, with more value-tilted YM sometimes lagging the rally NQ sees.",
+    'NFP': "The monthly jobs report. A much-stronger-than-expected number cuts both ways: read as economic strength, but also as reducing the case for rate cuts, which can weigh more on growth-heavy NQ than value-tilted YM. A weak number raises growth concerns but also rate-cut odds, so the net effect on ES/NQ/YM depends on which narrative dominates that session.",
+    'PPI': "Producer-side inflation — a leading indicator for consumer inflation (CPI) and corporate margins. Usually less market-moving than CPI alone, but a surprise can shift rate expectations in a similar direction: hot prints tend to pressure NQ more than YM.",
+    'GDP': "Quarterly growth data. Strong GDP tends to support cyclical/value names (YM) but can pressure long-duration growth (NQ) if it reinforces a higher-for-longer rate view. Weak GDP raises growth-scare risk across all three, typically hitting YM's more cyclical components hardest.",
+    'Claims': "Weekly initial and continuing jobless claims — a higher-frequency read on labor health between NFP reports. Rising claims can be read as an early recession signal (broadly negative for ES/NQ/YM) or as disinflationary and rate-cut-supportive (can be mildly positive, especially for rate-sensitive NQ) — the reaction usually depends on the market's prevailing narrative that week.",
+    'PMI': "Manufacturing and services purchasing-manager surveys — forward-looking gauges of business activity. A strong services print has historically moved rate expectations more than manufacturing (services inflation is stickier), so surprises there can move NQ and ES more than the more industrially-weighted YM; a weak manufacturing print can weigh on YM's industrial names specifically.",
+    'PCE': "The Fed's preferred inflation gauge. Mechanically similar to CPI but carries more direct weight in Fed decision-making, so surprises here can move rate expectations — and NQ in particular — even more directly than a CPI surprise.",
+    'Retail Sales': "Consumer spending data, a read on economic and consumer health. Strong sales tend to support cyclical/value names (YM) but, like GDP, can pressure NQ if it reinforces higher-for-longer rate expectations. Weak sales raise growth-scare risk broadly across ES/NQ/YM.",
+    'JOLTS/ADP': "Job openings (JOLTS) and private payrolls (ADP) — earlier, noisier previews of the labor market ahead of NFP. Historically a smaller market reaction than NFP itself, but can still nudge rate expectations modestly into the bigger release.",
+    'ECB / BOE': "European Central Bank / Bank of England rate decisions. These primarily move European indices and EUR/GBP directly, but can spill into US index futures (ES/NQ/YM) through the rates and dollar channel, especially when the decision or guidance surprises versus expectations."
+  };
+
   function macroStats() {
     var byEvent = {};
     var newsDay = { count: 0, wins: 0, net: 0 };
@@ -1105,9 +1122,6 @@
     var days = {};
     events.forEach(function (e) { if (!days[e.date]) days[e.date] = []; days[e.date].push(e); });
     var dates = Object.keys(days).sort();
-    var m = macroStats();
-    var recordFor = {};
-    m.byEvent.forEach(function (e) { recordFor[e.key] = e; });
     function matchFamily(title) {
       var hit = null;
       EVENT_DEFS.forEach(function (d) { if (!hit && d.match.test(title)) hit = d.key; });
@@ -1119,9 +1133,9 @@
       var isPast = d < todayIso;
       var items = days[d].map(function (e) {
         var fam = matchFamily(e.title);
-        var rec = fam && recordFor[fam];
-        var recLine = rec
-          ? '<div style="font-size:9.5px; color:' + (rec.net >= 0 ? 'var(--gain)' : 'var(--loss)') + '; margin-top:3px; font-family:var(--font-mono);">you: ' + fmtMoney(rec.net) + ' · ' + Math.round(rec.wins / rec.count * 100) + '% (' + rec.count + ')</div>'
+        var info = fam && EVENT_INFO[fam];
+        var infoLine = info
+          ? '<div style="font-size:10px; line-height:1.5; color:var(--text-dim); margin-top:6px; padding-top:6px; border-top:1px dashed var(--line-soft);">' + esc(info) + '</div>'
           : '';
         var fc = (e.forecast || e.previous)
           ? '<div style="font-size:9.5px; color:var(--text-faint); margin-top:2px; font-family:var(--font-mono);">' +
@@ -1133,10 +1147,10 @@
           '<span style="font-family:var(--font-mono); font-size:9.5px; color:var(--text-faint);">' + esc(e.time) + '</span>' +
           '<span style="font-size:9px; font-weight:700; color:var(--text-faint); letter-spacing:.04em;">' + esc(e.cur) + '</span>' +
           '</div>' +
-          '<div style="font-size:11.5px; line-height:1.35;">' + esc(e.title) + '</div>' + fc + recLine +
+          '<div style="font-size:11.5px; line-height:1.35;">' + esc(e.title) + '</div>' + fc + infoLine +
           '</div>';
       }).join('');
-      return '<div style="flex:1; min-width:158px; background:var(--surface-2); border:1px solid ' + (isToday ? 'var(--accent)' : 'var(--line-soft)') + '; border-radius:10px; padding:12px; opacity:' + (isPast ? '0.45' : '1') + ';">' +
+      return '<div style="flex:1; min-width:260px; max-width:340px; background:var(--surface-2); border:1px solid ' + (isToday ? 'var(--accent)' : 'var(--line-soft)') + '; border-radius:10px; padding:12px; opacity:' + (isPast ? '0.45' : '1') + ';">' +
         '<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">' +
         '<span style="font-size:13px; font-weight:700; color:' + (isToday ? 'var(--accent-2)' : 'var(--text)') + ';">' + dt.toLocaleDateString(undefined, { weekday: 'short' }) + '</span>' +
         '<span style="font-family:var(--font-mono); font-size:10px; color:var(--text-faint);">' + dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + '</span>' +

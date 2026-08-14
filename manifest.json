@@ -1,6 +1,6 @@
 {
-  "name": "LEDGER — Trading Journal",
-  "short_name": "LEDGER",
+  "name": "RAVE — Trading Journal",
+  "short_name": "RAVE",
   "description": "A private, offline-capable trading journal with local pattern analysis and optional Google Drive sync.",
   "start_url": "./index.html",
   "scope": "./",
