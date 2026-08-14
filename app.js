@@ -53,6 +53,24 @@
     var d = new Date();
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
+  function tradeDurationMinutes(t) {
+    if (!t.time || !t.exitTime) return null;
+    var a = t.time.split(':'), b = t.exitTime.split(':');
+    if (a.length < 2 || b.length < 2) return null;
+    var startMin = (parseInt(a[0], 10) * 60) + parseInt(a[1], 10);
+    var endMin = (parseInt(b[0], 10) * 60) + parseInt(b[1], 10);
+    if (isNaN(startMin) || isNaN(endMin)) return null;
+    var diff = endMin - startMin;
+    if (diff < 0) diff += 24 * 60; // held past midnight
+    if (diff === 0) return null;
+    return diff;
+  }
+  function fmtDuration(mins) {
+    if (mins == null) return '';
+    if (mins < 60) return mins + 'm';
+    var h = Math.floor(mins / 60), m = Math.round(mins % 60);
+    return h + 'h' + (m ? ' ' + m + 'm' : '');
+  }
   function toast(msg, isError) {
     var root = $('#toastRoot');
     root.innerHTML = '';
@@ -595,14 +613,12 @@
     var daysInMonth = new Date(y, m + 1, 0).getDate();
     var byDay = {};
     active(state.trades).forEach(function (t) {
-      if (!byDay[t.date]) byDay[t.date] = { net: 0, count: 0 };
+      if (!byDay[t.date]) byDay[t.date] = { net: 0, count: 0, wins: 0, durations: [] };
       byDay[t.date].net += Number(t.pnl) || 0;
       byDay[t.date].count++;
-    });
-    var maxAbs = 1;
-    Object.keys(byDay).forEach(function (k) {
-      var d = new Date(k + 'T00:00:00');
-      if (d.getFullYear() === y && d.getMonth() === m) maxAbs = Math.max(maxAbs, Math.abs(byDay[k].net));
+      if ((Number(t.pnl) || 0) > 0) byDay[t.date].wins++;
+      var dur = tradeDurationMinutes(t);
+      if (dur != null) byDay[t.date].durations.push(dur);
     });
 
     var cells = '';
@@ -610,26 +626,31 @@
     for (var day = 1; day <= daysInMonth; day++) {
       var dateStr = y + '-' + String(m + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
       var info = byDay[dateStr];
-      var style = '', pnlHtml = '', countHtml = '', hasCls = '';
+      var pnlHtml = '', rateHtml = '', metaHtml = '', hasCls = '', winCls = '';
       if (info) {
         hasCls = 'has-trades';
-        var alpha = 0.12 + Math.min(0.55, Math.abs(info.net) / maxAbs * 0.55);
-        var color = info.net >= 0 ? '111,168,138' : '193,97,74';
-        style = 'background:rgba(' + color + ',' + alpha.toFixed(2) + '); border-color:rgba(' + color + ',0.4);';
-        pnlHtml = '<div class="cal-pnl" style="color:' + (info.net >= 0 ? 'var(--gain)' : 'var(--loss)') + '">' + fmtMoney(info.net) + '</div>';
-        countHtml = '<div class="cal-count">' + info.count + ' trade' + (info.count > 1 ? 's' : '') + '</div>';
+        winCls = info.net >= 0 ? 'win-day' : 'loss-day';
+        var winRate = Math.round(info.wins / info.count * 100);
+        pnlHtml = '<div class="cal-pnl">' + fmtMoney(info.net) + '</div>';
+        rateHtml = '<div class="cal-rate">' + winRate + '%</div>';
+        var metaParts = [info.count + ' trade' + (info.count > 1 ? 's' : '')];
+        if (info.durations.length) {
+          var avgDur = Math.round(info.durations.reduce(function (s, v) { return s + v; }, 0) / info.durations.length);
+          metaParts.push(fmtDuration(avgDur) + ' avg');
+        }
+        metaHtml = '<div class="cal-meta">' + metaParts.join(' · ') + '</div>';
       }
       var sel = state.calSelectedDay === dateStr ? 'selected' : '';
-      cells += '<div class="cal-cell ' + hasCls + ' ' + sel + '" style="' + style + '" data-date="' + dateStr + '">' +
-        '<div class="cal-daynum">' + day + '</div>' + pnlHtml + countHtml +
+      cells += '<div class="cal-cell ' + hasCls + ' ' + winCls + ' ' + sel + '" data-date="' + dateStr + '">' +
+        '<div class="cal-daynum">' + day + '</div>' + pnlHtml + rateHtml + metaHtml +
         '</div>';
     }
 
     var monthLabel = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
     main.innerHTML =
       '<div class="page-head"><div><div class="page-title">Calendar</div><div class="page-sub">Daily P&amp;L at a glance</div></div>' +
-      '<div class="cal-nav"><button id="calPrev">←</button><div class="cal-month-label">' + monthLabel + '</div><button id="calNext">→</button></div></div>' +
-      '<div class="panel">' +
+      '<div class="cal-nav"><button id="calPrev" class="cal-nav-btn">←</button><div class="cal-month-label">' + monthLabel + '</div><button id="calNext" class="cal-nav-btn">→</button></div></div>' +
+      '<div class="panel cal-panel">' +
       '<div class="cal-grid">' +
       ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(function (d) { return '<div class="cal-dow">' + d + '</div>'; }).join('') +
       cells +
@@ -673,7 +694,7 @@
   function openTradeModal(trade) {
     var isEdit = !!trade;
     var t = trade || {
-      id: uid(), date: todayStr(), time: '', symbol: '', market: 'stock', direction: 'long',
+      id: uid(), date: todayStr(), time: '', exitTime: '', symbol: '', market: 'stock', direction: 'long',
       entry: '', exit: '', size: '', fees: '', pnl: '', tags: [], notes: '', emotion: '', rulesFollowed: null
     };
     var root = $('#modalRoot');
@@ -683,7 +704,8 @@
       '<form id="tradeForm">' +
       '<div class="form-grid">' +
       field('Date', 'date', 'date', t.date, true) +
-      field('Time (optional)', 'time', 'time', t.time) +
+      field('Entry Time (optional)', 'time', 'time', t.time) +
+      field('Exit Time (optional)', 'time', 'exitTime', t.exitTime) +
       field('Symbol', 'text', 'symbol', t.symbol, true, 'e.g. AAPL, ES, BTCUSD') +
       selectField('Market', 'market', MARKETS.map(function (mm) { return { v: mm.v, l: mm.l }; }), t.market) +
       selectField('Direction', 'direction', [{ v: 'long', l: 'Long' }, { v: 'short', l: 'Short' }], t.direction) +
@@ -758,6 +780,7 @@
         id: t.id,
         date: $('#f_date').value,
         time: $('#f_time').value,
+        exitTime: $('#f_exitTime').value,
         symbol: ($('#f_symbol').value || '').toUpperCase().trim(),
         market: $('#f_market').value,
         direction: $('#f_direction').value,

@@ -187,23 +187,38 @@ table.trade-table{width:100%; border-collapse:collapse; font-size:13px;}
 .row-del:hover{color:var(--loss);}
 
 /* ---- Calendar ---- */
-.cal-nav{display:flex; align-items:center; gap:12px;}
-.cal-nav button{background:var(--surface-2); border:1px solid var(--line-soft); color:var(--text); border-radius:6px; padding:5px 10px; font-size:13px;}
-.cal-nav button:hover{border-color:var(--gold-soft);}
-.cal-month-label{font-family:var(--font-mono); font-size:13px; min-width:120px; text-align:center;}
-.cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:6px;}
-.cal-dow{font-family:var(--font-mono); font-size:10px; color:var(--text-faint); text-align:center; padding-bottom:4px; text-transform:uppercase;}
+.cal-nav{display:flex; align-items:center; gap:14px;}
+.cal-nav-btn{
+  background:var(--surface-2); border:1px solid var(--line-soft); color:var(--text);
+  border-radius:8px; width:34px; height:34px; font-size:14px; display:inline-flex; align-items:center; justify-content:center;
+}
+.cal-nav-btn:hover{border-color:var(--accent); color:var(--accent-2);}
+.cal-month-label{font-family:var(--font-display); font-size:15px; font-weight:700; min-width:140px; text-align:center; letter-spacing:.01em;}
+.cal-panel{padding:16px;}
+.cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:5px;}
+.cal-dow{font-family:var(--font-mono); font-size:10px; color:var(--text-faint); text-align:center; padding-bottom:8px; text-transform:uppercase; letter-spacing:.06em;}
 .cal-cell{
-  aspect-ratio:1/0.85; border-radius:7px; border:1px solid var(--line-soft); background:var(--surface-2);
-  padding:6px 7px; display:flex; flex-direction:column; justify-content:space-between; cursor:default;
+  aspect-ratio:1/0.82; border-radius:10px; border:1px solid transparent; background:var(--surface-2);
+  padding:9px 8px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+  cursor:default; text-align:center; transition:border-color .12s, transform .12s;
 }
 .cal-cell.empty{background:transparent; border-color:transparent;}
-.cal-cell.has-trades{cursor:pointer;}
-.cal-cell.has-trades:hover{border-color:var(--gold-soft);}
-.cal-cell.selected{border-color:var(--gold);}
-.cal-daynum{font-family:var(--font-mono); font-size:11px; color:var(--text-dim);}
-.cal-pnl{font-family:var(--font-mono); font-size:11.5px; font-weight:600;}
-.cal-count{font-size:9.5px; color:var(--text-faint);}
+.cal-cell.has-trades{cursor:pointer; align-items:center;}
+.cal-cell.has-trades:hover{transform:translateY(-1px);}
+.cal-cell.win-day{background:rgba(34,211,154,0.10); border-color:rgba(34,211,154,0.35);}
+.cal-cell.win-day:hover{border-color:rgba(34,211,154,0.7);}
+.cal-cell.loss-day{background:rgba(255,92,114,0.10); border-color:rgba(255,92,114,0.35);}
+.cal-cell.loss-day:hover{border-color:rgba(255,92,114,0.7);}
+.cal-cell.selected{border-color:var(--accent) !important; box-shadow:0 0 0 1px var(--accent) inset;}
+.cal-daynum{font-family:var(--font-mono); font-size:11px; color:var(--text-dim); align-self:flex-start; margin-bottom:auto;}
+.cal-cell.empty .cal-daynum{color:var(--text-faint);}
+.cal-pnl{font-family:var(--font-mono); font-size:14px; font-weight:700; color:var(--text);}
+.cal-cell.win-day .cal-pnl{color:var(--gain);}
+.cal-cell.loss-day .cal-pnl{color:var(--loss);}
+.cal-rate{font-family:var(--font-mono); font-size:10px; font-weight:600; opacity:.8;}
+.cal-cell.win-day .cal-rate{color:var(--gain);}
+.cal-cell.loss-day .cal-rate{color:var(--loss);}
+.cal-meta{font-size:9px; color:var(--text-faint); margin-top:3px; line-height:1.4;}
 .cal-detail{margin-top:16px;}
 
 /* ---- Modal ---- */
