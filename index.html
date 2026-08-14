@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>LEDGER — Trading Journal</title>
+<meta name="description" content="A private, offline-capable trading journal with local pattern analysis and optional Google Drive sync across your devices.">
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#08090D">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="LEDGER">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="pulse-strip">
+    <span class="pulse-label">Equity Pulse</span>
+    <span class="pulse-sync-dot" id="pulseSyncDot" title="Not connected to Google Drive"></span>
+    <span class="pulse-value" id="pulseValue">$0.00</span>
+    <svg id="pulseSvg" viewBox="0 0 1000 34" preserveAspectRatio="none"></svg>
+  </div>
+  <div class="shell">
+    <nav class="sidebar">
+      <div class="brand"><span class="brand-mark">L</span><span class="brand-name">LEDGER</span></div>
+      <button class="nav-item active" data-tab="dashboard"><span class="nav-icon">◆</span>Dashboard</button>
+      <button class="nav-item" data-tab="log"><span class="nav-icon">≡</span>Trade Log</button>
+      <button class="nav-item" data-tab="calendar"><span class="nav-icon">▦</span>Calendar</button>
+      <button class="nav-item" data-tab="macro"><span class="nav-icon">◈</span>Macro Calendar</button>
+      <button class="nav-item" data-tab="props"><span class="nav-icon">⚑</span>Prop Firms</button>
+      <button class="nav-item" data-tab="coach"><span class="nav-icon">✦</span>Coach</button>
+      <button class="nav-item" data-tab="settings"><span class="nav-icon">⚙</span>Settings</button>
+      <div class="sidebar-spacer"></div>
+      <button class="btn-primary" id="addTradeBtn">+ New Trade</button>
+      <button class="btn-ghost" id="importBtn" style="width:100%; margin-top:8px;">↑ Import ES History</button>
+      <div class="sidebar-hint" id="storageHint">Saved locally on this device</div>
+    </nav>
+    <main id="main"></main>
+  </div>
+</div>
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+
+<script src="sync.js"></script>
+<script src="coach.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
