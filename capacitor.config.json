@@ -1,0 +1,9 @@
+{
+  "appId": "com.rave.journal",
+  "appName": "RAVE",
+  "webDir": ".",
+  "backgroundColor": "#000000",
+  "server": {
+    "androidScheme": "https"
+  }
+}

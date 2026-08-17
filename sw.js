@@ -1,7 +1,7 @@
 /* Service worker for RAVE — caches the app shell so it opens instantly and
    works offline. Your trade data never passes through here: it lives in
    localStorage and (optionally) your own Google Drive, not in this cache. */
-var CACHE_NAME = 'ledger-shell-v3';
+var CACHE_NAME = 'ledger-shell-v4';
 var SHELL_FILES = [
   './',
   './index.html',
@@ -12,7 +12,7 @@ var SHELL_FILES = [
   './manifest.json',
   './icons/icon-192-r3.png',
   './icons/icon-512-r3.png',
-  './icons/logo-wordmark-r3.png'
+  './icons/logo-wordmark-r4.png'
 ];
 
 self.addEventListener('install', function (event) {

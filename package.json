@@ -1,0 +1,19 @@
+{
+  "name": "rave-trading-journal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RAVE \u2014 private trading journal PWA, wrapped for app store distribution.",
+  "scripts": {
+    "release:assets": "python3 scripts/prepare-app-release.py",
+    "cap:sync": "npx cap sync"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/assets": "^3.0.5"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/ios": "^6.0.0",
+    "@capacitor/android": "^6.0.0"
+  }
+}
