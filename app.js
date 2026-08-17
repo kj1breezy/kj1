@@ -174,6 +174,37 @@
     }
   }
 
+  // Lightweight background sync: pulls whatever the other device(s) have
+  // pushed and merges it in, without forcing a push of our own (the debounced
+  // push in scheduleDriveSync already covers our own edits). Used on a timer
+  // and whenever the tab/window regains focus, so devices stay in step
+  // without the user having to hit "Sync now" or reload.
+  var autoPullInFlight = false;
+  async function autoPullSync() {
+    if (!window.DriveSync || !window.DriveSync.isConnected()) return;
+    if (autoPullInFlight) return;
+    autoPullInFlight = true;
+    try {
+      var remote = await window.DriveSync.pull();
+      if (remote) {
+        var beforeTrades = JSON.stringify(state.trades);
+        var beforeAccounts = JSON.stringify(state.accounts);
+        state.trades = mergeById(state.trades, remote.trades);
+        state.accounts = mergeById(state.accounts, remote.accounts);
+        if (remote.settings) state.settings = Object.assign({}, remote.settings, state.settings);
+        persistLocal();
+        if (JSON.stringify(state.trades) !== beforeTrades || JSON.stringify(state.accounts) !== beforeAccounts) {
+          render();
+        }
+      }
+      renderSyncBits();
+    } catch (e) {
+      // silent — background sync shouldn't interrupt the user
+    } finally {
+      autoPullInFlight = false;
+    }
+  }
+
   // ==========================================================================
   // Stats
   // ==========================================================================
@@ -1608,6 +1639,15 @@
       window.DriveSync.tryAutoReconnect().then(function (ok) {
         if (ok) fullSync(false);
       });
+
+      // Keep devices in step while the app is open: pull on an interval,
+      // and immediately whenever this tab/window becomes active again
+      // (switching back from another app, waking the laptop, etc).
+      setInterval(autoPullSync, 40000);
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) autoPullSync();
+      });
+      window.addEventListener('focus', autoPullSync);
     }
 
     fetchCalendar(false).then(function () { render(); });
