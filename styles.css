@@ -467,6 +467,26 @@ table.trade-table{width:100%; border-collapse:collapse; font-size:13px;}
 .mic-btn.listening{background:var(--loss-dim); border-color:rgba(255,92,114,0.4); color:var(--loss); animation:mic-pulse 1.1s infinite;}
 @keyframes mic-pulse{0%,100%{opacity:1;}50%{opacity:.5;}}
 
+/* ---- Watchlist: live price cards ---- */
+.wl-price-row{display:flex; align-items:center; justify-content:space-between; gap:14px; padding:4px 0 2px;}
+.wl-price{font-family:var(--font-mono); font-size:24px; font-weight:700; letter-spacing:-0.01em;}
+.wl-change{font-family:var(--font-mono); font-size:12px; font-weight:600; margin-top:2px;}
+.wl-change.gain{color:var(--gain);}
+.wl-change.loss{color:var(--loss);}
+.wl-spark{width:110px; height:34px; flex-shrink:0;}
+.wl-asof{font-size:10.5px; color:var(--text-faint); margin-top:6px; display:flex; align-items:center;}
+.wl-refresh{background:var(--surface-2); border:1px solid var(--border-hair); color:var(--text-faint); border-radius:6px; line-height:1.3; transition:color .15s, border-color .15s;}
+.wl-refresh:hover{color:var(--text); border-color:var(--border-hair-strong);}
+.wl-trade-summary{font-size:11.5px; color:var(--text-faint); margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft);}
+
+/* ---- Dashboard HUD: VIX cell (replaces Rule Adherence) ---- */
+.hud-vix .hud-value{font-size:18px;}
+
+/* ---- Accounts page: combined equity curves (replaces Fleet Summary) ---- */
+.acct-eq-legend{display:flex; flex-wrap:wrap; gap:14px; margin-top:12px;}
+.acct-eq-legend-item{display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--text-dim);}
+.acct-eq-dot{width:9px; height:9px; border-radius:50%; display:inline-block; flex-shrink:0;}
+
 /* ---- Mobile ---- */
 @media(max-width:760px){
   .shell{flex-direction:column;}

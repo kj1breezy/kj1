@@ -8,6 +8,7 @@
     trades: [],
     accounts: [],
     watchlist: [],
+    quotes: {}, // runtime-only live-price cache, keyed by mapped ticker — never persisted/synced
     settings: { driveClientId: '' },
     calendar: null,
     calendarMeta: null,
@@ -176,7 +177,8 @@
       maxConsecLosses: Number(g.maxConsecLosses) || 2,
       overfreqCount: Number(g.overfreqCount) || 3,
       overfreqWindow: Number(g.overfreqWindow) || 5,
-      slippageThreshold: g.slippageThreshold === '' || g.slippageThreshold == null ? null : Number(g.slippageThreshold)
+      slippageThreshold: g.slippageThreshold === '' || g.slippageThreshold == null ? null : Number(g.slippageThreshold),
+      dailyLossLimit: (state.settings && state.settings.dailyLossLimit) ? Number(state.settings.dailyLossLimit) : null
     };
   }
   function timeToMinutes(ts) {
@@ -221,33 +223,19 @@
       });
       if (worstSlip != null) alerts.push({ kind: 'slippage', severity: 'warn', message: 'Slippage of ' + worstSlip.toFixed(2) + ' exceeded your ' + guardrails.slippageThreshold + ' threshold on a trade today.' });
     }
+    // daily loss limit (formerly its own HUD guard bar — now folded in here as an alert)
+    if (guardrails.dailyLossLimit != null && guardrails.dailyLossLimit > 0) {
+      var netToday = todaysTrades.reduce(function (a, t) { return a + (Number(t.pnl) || 0); }, 0);
+      var lossToday = netToday < 0 ? Math.abs(netToday) : 0;
+      if (lossToday >= guardrails.dailyLossLimit) {
+        alerts.push({ kind: 'dailyLoss', severity: 'loss', message: 'Daily loss limit hit — ' + fmtMoney(lossToday) + ' of ' + fmtMoney(guardrails.dailyLossLimit) + ' logged today.' });
+      } else if (lossToday >= guardrails.dailyLossLimit * 0.7) {
+        alerts.push({ kind: 'dailyLoss', severity: 'warn', message: fmtMoney(lossToday) + ' of your ' + fmtMoney(guardrails.dailyLossLimit) + ' daily loss limit used today.' });
+      }
+    }
     return alerts;
   }
 
-  // ---- Trade-history "volume profile": buckets your own fills by price ----
-  function volumeProfileForSymbol(symbol) {
-    var trades = active(state.trades).filter(function (t) { return (t.symbol || '').toUpperCase() === symbol.toUpperCase(); });
-    var prices = [];
-    trades.forEach(function (t) {
-      var size = Number(t.size) || 1;
-      if (t.entry !== '' && t.entry != null && !isNaN(Number(t.entry))) prices.push({ price: Number(t.entry), size: size, pnl: Number(t.pnl) || 0 });
-      if (t.exit !== '' && t.exit != null && !isNaN(Number(t.exit))) prices.push({ price: Number(t.exit), size: size, pnl: 0 });
-    });
-    if (!prices.length) return { trades: trades, buckets: [] };
-    var vals = prices.map(function (p) { return p.price; });
-    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
-    var range = (max - min) || Math.max(1, min * 0.01);
-    var N = 12;
-    var buckets = [];
-    for (var i = 0; i < N; i++) buckets.push({ lo: min + (range / N) * i, hi: min + (range / N) * (i + 1), size: 0, pnl: 0 });
-    prices.forEach(function (p) {
-      var idx = Math.min(N - 1, Math.floor(((p.price - min) / range) * N));
-      if (idx < 0) idx = 0;
-      buckets[idx].size += p.size;
-      buckets[idx].pnl += p.pnl;
-    });
-    return { trades: trades, buckets: buckets };
-  }
   function toast(msg, isError) {
     var root = $('#toastRoot');
     root.innerHTML = '';
@@ -440,6 +428,22 @@
     return s;
   }
 
+  // Shared peak/drawdown walk over a cumulative equity curve — used by both
+  // the Dashboard equity chart and the Max Drawdown HUD cell so the two
+  // numbers never drift apart.
+  function maxDrawdownStats(sorted) {
+    if (!sorted || !sorted.length) return { maxDD: 0, currentDD: 0, hasTrades: false };
+    var cum = 0, peak = 0, maxDD = 0, currentDD = 0;
+    sorted.forEach(function (t) {
+      cum += Number(t.pnl) || 0;
+      if (cum > peak) peak = cum;
+      var dd = peak - cum;
+      if (dd > maxDD) maxDD = dd;
+      currentDD = dd;
+    });
+    return { maxDD: maxDD, currentDD: currentDD, hasTrades: true };
+  }
+
   function groupBy(trades, keyFn) {
     var map = {};
     active(trades).forEach(function (t) {
@@ -535,23 +539,38 @@
     return '<div class="hud-cell"><div class="hud-label">' + esc(label) + '</div><div class="hud-value ' + (cls || '') + '">' + value + '</div></div>';
   }
 
-  function hudStrip() {
+  function hudStrip(s) {
     var td = todayStats();
-    var limit = Number(state.settings.dailyLossLimit) || 0;
-    var lossToday = td.net < 0 ? Math.abs(td.net) : 0;
-    var guardPct = limit > 0 ? Math.min(100, Math.round(lossToday / limit * 100)) : null;
-    var guardColor = guardPct == null ? 'var(--text-faint)' : (guardPct >= 100 ? 'var(--loss)' : guardPct >= 70 ? 'var(--warn)' : 'var(--gain)');
-    var guardInner = guardPct == null
-      ? '<div class="hud-guard-empty">Set a daily loss limit in Settings to arm this</div>'
-      : '<div class="hud-guard-bar"><div class="hud-guard-fill" style="width:' + guardPct + '%; background:' + guardColor + ';"></div></div>' +
-        '<div class="hud-guard-label" style="color:' + guardColor + ';">' + fmtMoney(lossToday) + ' / ' + fmtMoney(limit) + (guardPct >= 100 ? ' — LIMIT HIT' : '') + '</div>';
-    var adhCls = td.adherence == null ? '' : (td.adherence >= 80 ? 'gain' : td.adherence >= 50 ? 'warn' : 'loss');
+    var dd = maxDrawdownStats(s && s.sorted);
+    var ddCls = dd.currentDD > 0.5 ? 'loss' : '';
     return '<div class="hud-strip">' +
       hudCell("Today's P&L", fmtMoney(td.net), td.net >= 0 ? 'gain' : 'loss') +
       hudCell('Trades Today', String(td.count)) +
-      hudCell('Rule Adherence', td.adherence == null ? '—' : (td.adherence + '%'), adhCls) +
-      '<div class="hud-cell hud-guard"><div class="hud-label">Drawdown Guard</div>' + guardInner + '</div>' +
+      vixHudCell() +
+      hudCell('Max Drawdown', dd.hasTrades ? fmtMoney(dd.maxDD) : '—', dd.maxDD > 0 ? 'loss' : '') +
       '</div>';
+  }
+
+  // VIX HUD cell — live level + sparkline, replaces the old Rule Adherence
+  // cell (that report still lives on the Coach tab, just not duplicated here).
+  function vixHudCell() {
+    ensureQuote('VIX');
+    var q = getQuote('VIX');
+    if (!q || q.status === 'loading') {
+      return '<div class="hud-cell hud-vix"><div class="hud-label">VIX</div><div style="font-size:11px; color:var(--text-faint); padding-top:5px;">Loading…</div></div>';
+    }
+    if (q.status === 'error') {
+      return '<div class="hud-cell hud-vix"><div class="hud-label">VIX</div><div style="font-size:10.5px; color:var(--text-faint); padding-top:5px; line-height:1.4;">Unavailable</div></div>';
+    }
+    // Rising VIX = rising fear, colored like a risk warning; falling VIX = calmer tape.
+    var cls = q.change == null ? '' : (q.change >= 0 ? 'loss' : 'gain');
+    var changeStr = q.change == null ? '' : (q.change >= 0 ? '+' : '') + q.change.toFixed(2);
+    return '<div class="hud-cell hud-vix"><div class="hud-label">VIX</div>' +
+      '<div style="display:flex; align-items:flex-end; justify-content:space-between; gap:8px;">' +
+      '<div><div class="hud-value ' + cls + '">' + q.price.toFixed(2) + '</div>' +
+      (changeStr ? '<div class="' + cls + '" style="font-family:var(--font-mono); font-size:10.5px; margin-top:1px;">' + changeStr + '</div>' : '') + '</div>' +
+      '<div style="width:60px; height:24px; flex-shrink:0;">' + sparklineSvg(q.points, 60, 24, q.change == null ? null : (q.change >= 0 ? 'var(--loss)' : 'var(--gain)')) + '</div>' +
+      '</div></div>';
   }
 
   function riskAlertBanner() {
@@ -685,7 +704,7 @@
     main.innerHTML =
       '<div class="page-head"><div><div class="page-title">Dashboard</div><div class="page-sub">' + s.count + ' trades logged</div></div></div>' +
       installBanner() +
-      hudStrip() +
+      hudStrip(s) +
       riskAlertBanner() +
       sessionBrief(s) +
       '<div class="stat-grid">' +
@@ -1722,6 +1741,88 @@
   }
 
   // ==========================================================================
+  // Live market quotes — real index/stock/crypto prices, fetched client-side
+  // via the same CORS-relay pattern already used for the macro calendar above
+  // (Yahoo Finance's public chart endpoint, tried direct first, then relayed).
+  // Cached briefly in memory; never persisted, never synced.
+  // ==========================================================================
+  var QUOTE_TTL_MS = 90 * 1000;
+  var QUOTE_ERROR_COOLDOWN_MS = 20 * 1000;
+  var FUTURES_TICKER_MAP = {
+    ES: 'ES=F', NQ: 'NQ=F', YM: 'YM=F', RTY: 'RTY=F', CL: 'CL=F', GC: 'GC=F',
+    SI: 'SI=F', NG: 'NG=F', ZB: 'ZB=F', ZN: 'ZN=F', ZF: 'ZF=F', HG: 'HG=F', VIX: '^VIX'
+  };
+  var CRYPTO_SUFFIX = /^(BTC|ETH|SOL|DOGE|XRP|ADA|LTC|BNB|AVAX|LINK)(USD|USDT)$/;
+  function mapToYahooTicker(symbol) {
+    var s = (symbol || '').toUpperCase().trim();
+    if (!s) return s;
+    if (FUTURES_TICKER_MAP[s]) return FUTURES_TICKER_MAP[s];
+    var cryptoMatch = s.match(CRYPTO_SUFFIX);
+    if (cryptoMatch) return cryptoMatch[1] + '-USD';
+    return s; // assume it's already a valid stock/ETF ticker
+  }
+
+  async function fetchYahooChart(ticker) {
+    var base = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(ticker) + '?interval=5m&range=1d';
+    var routes = [base].concat(CORS_RELAYS.map(function (mk) { return mk(base); }));
+    var lastErr = null;
+    for (var i = 0; i < routes.length; i++) {
+      try {
+        var data = await tryFetchJson(routes[i]);
+        var result = data && data.chart && data.chart.result && data.chart.result[0];
+        if (!result || !result.meta) throw new Error('no data for ' + ticker);
+        var meta = result.meta;
+        var closes = (result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close) || [];
+        var points = closes.filter(function (v) { return v != null; });
+        var price = meta.regularMarketPrice;
+        var prevClose = meta.chartPreviousClose || meta.previousClose;
+        if (price == null) throw new Error('no price for ' + ticker);
+        return {
+          status: 'ok', price: price, prevClose: prevClose,
+          change: prevClose != null ? price - prevClose : null,
+          changePct: prevClose ? ((price - prevClose) / prevClose) * 100 : null,
+          points: points.length ? points : [price], asOf: Date.now()
+        };
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error('unreachable');
+  }
+
+  function ensureQuote(symbol) {
+    var ticker = mapToYahooTicker(symbol);
+    var cached = state.quotes[ticker];
+    if (cached && cached.status === 'loading') return;
+    if (cached && cached.status === 'ok' && Date.now() - cached.asOf < QUOTE_TTL_MS) return;
+    // Cool down after a failure too — otherwise render() re-triggers ensureQuote()
+    // on every redraw, which retries the fetch immediately and can loop forever
+    // flashing between "loading" and "error" without ever settling on screen.
+    if (cached && cached.status === 'error' && Date.now() - cached.asOf < QUOTE_ERROR_COOLDOWN_MS) return;
+    state.quotes[ticker] = Object.assign({}, cached, { status: 'loading' });
+    fetchYahooChart(ticker).then(function (q) {
+      state.quotes[ticker] = q;
+      render();
+    }).catch(function (e) {
+      state.quotes[ticker] = { status: 'error', error: (e && e.message) || 'unreachable', asOf: Date.now() };
+      render();
+    });
+  }
+  function getQuote(symbol) { return state.quotes[mapToYahooTicker(symbol)] || null; }
+
+  // Small inline SVG sparkline shared by the Watchlist and the Dashboard VIX cell.
+  function sparklineSvg(points, w, h, colorOverride) {
+    if (!points || points.length < 2) return '';
+    var min = Math.min.apply(null, points), max = Math.max.apply(null, points);
+    var range = (max - min) || 1;
+    var step = w / (points.length - 1);
+    var d = points.map(function (v, i) {
+      var x = i * step, y = h - ((v - min) / range) * h;
+      return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    var color = colorOverride || (points[points.length - 1] >= points[0] ? 'var(--gain)' : 'var(--loss)');
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" style="width:100%; height:' + h + 'px; display:block;" preserveAspectRatio="none"><path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>';
+  }
+
+  // ==========================================================================
   // Prop Firms
   // ==========================================================================
   function accountStats(acc) {
@@ -1761,29 +1862,84 @@
     };
   }
 
-  function fleetSummary(accts) {
-    var untaggedTrades = active(state.trades).filter(function (t) { return !t.accountId; });
-    var allNet = active(state.trades).reduce(function (s, t) { return s + (Number(t.pnl) || 0); }, 0);
-    var allRs = active(state.trades).map(rMultiple).filter(function (r) { return r != null; });
-    var cumR = allRs.length ? allRs.reduce(function (a, b) { return a + b; }, 0) : null;
-    var openRiskToday = active(state.trades).filter(function (t) { return t.date === todayStr(); })
-      .reduce(function (s, t) { return s + (Number(t.plannedRisk) || 0); }, 0);
-    var worstAccountDay = null;
-    accts.forEach(function (acc) {
-      var st = accountStats(acc);
-      if (st.worstDay < 0 && (worstAccountDay === null || st.worstDay < worstAccountDay.worstDay)) {
-        worstAccountDay = { firm: acc.firm, worstDay: st.worstDay, date: st.worstDayDate };
-      }
+  // Combined equity curves — one line per account (fixed categorical order,
+  // validated colorblind-safe for dark mode) plus a neutral dashed line for
+  // personal/untagged trades, all on one $ axis, sequence-indexed like the
+  // main Dashboard equity curve. Direct end-labels satisfy the dataviz
+  // requirement given the tritan-safe floor on this 3-hue palette.
+  var ACCT_EQUITY_PALETTE = ['#E0349E', '#1584C4', '#7C5CFC'];
+  function accountsEquityChart(accts) {
+    function cumPts(trades) {
+      var cum = 0, pts = [0];
+      trades.forEach(function (t) { cum += Number(t.pnl) || 0; pts.push(cum); });
+      return pts;
+    }
+    var withTrades = accts.map(function (acc) {
+      var trades = active(state.trades).filter(function (t) { return t.accountId === acc.id; })
+        .slice().sort(function (a, b) { return (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')); });
+      return { acc: acc, trades: trades };
+    }).filter(function (x) { return x.trades.length; })
+      .sort(function (a, b) { return b.trades.length - a.trades.length; });
+
+    var series = [];
+    withTrades.slice(0, ACCT_EQUITY_PALETTE.length).forEach(function (x, i) {
+      var pts = cumPts(x.trades);
+      series.push({ name: x.acc.nickname || x.acc.firm, color: ACCT_EQUITY_PALETTE[i], pts: pts, net: pts[pts.length - 1], n: x.trades.length });
     });
-    return '<div class="panel" style="border-color:var(--accent-dim); background:linear-gradient(160deg, var(--accent-dim), transparent 65%);">' +
-      '<div class="panel-title" style="color:var(--accent-2);">Fleet Summary — every account + personal, combined</div>' +
-      '<div class="stat-grid" style="margin-bottom:0;">' +
-      stat('Aggregate Net P&L', fmtMoney(allNet), allNet >= 0 ? 'gain' : 'loss', accts.length + ' account' + (accts.length === 1 ? '' : 's') + ' + personal') +
-      stat('Cumulative R', cumR == null ? '—' : fmtR(cumR), cumR == null ? '' : (cumR >= 0 ? 'gain' : 'loss'), 'sum of realized R-multiples') +
-      stat('Risk Logged Today', fmtMoney(openRiskToday), '', 'sum of Planned Risk on today\'s trades') +
-      stat('Untagged / Personal', String(untaggedTrades.length) + ' trades', '', 'not assigned to any account') +
-      (worstAccountDay ? stat('Worst Account-Day', fmtMoney(worstAccountDay.worstDay), 'loss', esc(worstAccountDay.firm) + ' · ' + fmtDate(worstAccountDay.date)) : '') +
-      '</div></div>';
+    if (withTrades.length > ACCT_EQUITY_PALETTE.length) {
+      var restTrades = withTrades.slice(ACCT_EQUITY_PALETTE.length).reduce(function (arr, x) { return arr.concat(x.trades); }, [])
+        .sort(function (a, b) { return (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')); });
+      var restPts = cumPts(restTrades);
+      series.push({ name: 'Other accounts (' + (withTrades.length - ACCT_EQUITY_PALETTE.length) + ')', color: 'var(--text-faint)', pts: restPts, net: restPts[restPts.length - 1], n: restTrades.length, dashed: '3 4' });
+    }
+    var untagged = active(state.trades).filter(function (t) { return !t.accountId; })
+      .slice().sort(function (a, b) { return (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')); });
+    if (untagged.length) {
+      var uPts = cumPts(untagged);
+      series.push({ name: 'Personal / Untagged', color: 'var(--text-faint)', pts: uPts, net: uPts[uPts.length - 1], n: untagged.length, dashed: '2 3' });
+    }
+
+    if (!series.length) {
+      return '<div class="panel"><div class="panel-title">Combined Equity — every account + personal</div>' +
+        '<div style="color:var(--text-faint); font-size:12.5px; padding:6px 0;">No trades logged on any account yet — tag trades to an account (or leave them personal) in the trade form and this fills in with a combined equity view.</div></div>';
+    }
+
+    var allVals = [0];
+    series.forEach(function (s) { allVals = allVals.concat(s.pts); });
+    var min = Math.min.apply(null, allVals), max = Math.max.apply(null, allVals);
+    var range = (max - min) || 1;
+    var w = 640, h = 210, padL = 8, padR = 108, padY = 16;
+    function xy(v, i, n) {
+      var x = padL + (n <= 1 ? 0 : (i / (n - 1)) * (w - padL - padR));
+      var y = h - padY - ((v - min) / range) * (h - padY * 2);
+      return [x, y];
+    }
+    var zeroY = h - padY - ((0 - min) / range) * (h - padY * 2);
+    var built = series.map(function (s) {
+      var d = s.pts.map(function (v, i) { var p = xy(v, i, s.pts.length); return (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ');
+      var end = xy(s.pts[s.pts.length - 1], s.pts.length - 1, s.pts.length);
+      return { s: s, d: d, end: end };
+    });
+    var lines = built.map(function (b) {
+      return '<path d="' + b.d + '" fill="none" stroke="' + b.s.color + '" stroke-width="2"' + (b.s.dashed ? ' stroke-dasharray="' + b.s.dashed + '"' : '') + '/>';
+    }).join('');
+    var endMarkers = built.map(function (b) {
+      var cls = b.s.net >= 0 ? 'gain' : 'loss';
+      return '<circle cx="' + b.end[0].toFixed(1) + '" cy="' + b.end[1].toFixed(1) + '" r="2.8" fill="' + b.s.color + '"/>' +
+        '<text x="' + (b.end[0] + 7).toFixed(1) + '" y="' + (b.end[1] - 2).toFixed(1) + '" font-size="9.5" font-family="JetBrains Mono, monospace" fill="' + b.s.color + '">' + esc(b.s.name.length > 14 ? b.s.name.slice(0, 13) + '…' : b.s.name) + '</text>' +
+        '<text x="' + (b.end[0] + 7).toFixed(1) + '" y="' + (b.end[1] + 9).toFixed(1) + '" font-size="9.5" font-family="JetBrains Mono, monospace" fill="var(--' + cls + ')">' + fmtMoney(b.s.net) + '</text>';
+    }).join('');
+    var legend = series.length >= 2 ? '<div class="acct-eq-legend">' +
+      series.map(function (s) {
+        var cls = s.net >= 0 ? 'gain' : 'loss';
+        return '<div class="acct-eq-legend-item"><span class="acct-eq-dot" style="background:' + s.color + ';"></span>' + esc(s.name) +
+          ' <b style="color:var(--' + cls + '); font-family:var(--font-mono);">' + fmtMoney(s.net) + '</b> <span style="color:var(--text-faint);">· ' + s.n + '×</span></div>';
+      }).join('') + '</div>' : '';
+    return '<div class="panel"><div class="panel-title">Combined Equity <span style="font-weight:400; font-size:10px; color:var(--text-faint); text-transform:none; letter-spacing:0;">every account + personal, on one curve</span></div>' +
+      '<svg viewBox="0 0 ' + w + ' ' + h + '" style="width:100%; height:220px;">' +
+      '<line x1="' + padL + '" y1="' + zeroY.toFixed(1) + '" x2="' + (w - padR) + '" y2="' + zeroY.toFixed(1) + '" stroke="#242B34" stroke-dasharray="3 4"/>' +
+      lines + endMarkers +
+      '</svg>' + legend + '</div>';
   }
 
   function payoutRoadmap(acc, st) {
@@ -1924,7 +2080,7 @@
         payoutRoadmap(acc, st) +
         '</div>';
     }).join('');
-    main.innerHTML = head + accountsTable(accts) + fleetSummary(accts) + finance +
+    main.innerHTML = head + accountsTable(accts) + accountsEquityChart(accts) + finance +
       '<div style="font-family:var(--font-mono); font-size:11px; letter-spacing:0.08em; color:var(--text-faint); text-transform:uppercase; margin:4px 0 12px;">Account detail — rules, drawdown &amp; payout roadmap</div>' +
       '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:18px; margin-bottom:18px;">' + cards + '</div>' +
       copyTradeDriftTable(accts) +
@@ -2010,64 +2166,66 @@
   }
 
   // ==========================================================================
-  // Watchlist — symbols + a volume profile built from YOUR OWN logged trades
-  // (not live market data — this app has no market-data feed or backend).
+  // Watchlist — real live prices (via the shared quote fetcher above), plus a
+  // compact summary of your own trade history on that symbol underneath.
   // ==========================================================================
-  function volumeProfileBars(profile) {
-    if (!profile.buckets.length) return '<div style="color:var(--text-faint); font-size:12px;">No priced trades logged on this symbol yet.</div>';
-    var maxSize = Math.max.apply(null, profile.buckets.map(function (b) { return b.size; }).concat([1]));
-    var rows = profile.buckets.slice().reverse().map(function (b) {
-      var pctW = b.size ? Math.max(4, Math.round(b.size / maxSize * 100)) : 0;
-      var cls = b.pnl > 0 ? 'gain' : (b.pnl < 0 ? 'loss' : '');
-      var mid = (b.lo + b.hi) / 2;
-      return '<div style="display:flex; align-items:center; gap:8px; padding:2px 0;">' +
-        '<div style="width:64px; flex-shrink:0; font-family:var(--font-mono); font-size:10px; color:var(--text-faint); text-align:right;">' + mid.toFixed(2) + '</div>' +
-        '<div style="flex:1; min-width:40px;"><div class="meter" style="margin:0;"><div style="width:' + pctW + '%; background:var(--' + (cls || 'accent') + ');"></div></div></div>' +
-        '<div style="width:34px; flex-shrink:0; font-family:var(--font-mono); font-size:10px; color:var(--text-faint);">' + (b.size || '') + '</div>' +
-        '</div>';
-    }).join('');
-    return rows + '<div style="margin-top:8px; font-size:10px; color:var(--text-faint);">Volume-at-price from your own fills — green/red = that zone\'s net P&amp;L, bar width = size traded there. Not live market data.</div>';
+  function quoteBlock(symbol) {
+    var q = getQuote(symbol);
+    if (!q || q.status === 'loading') {
+      return '<div class="wl-price-row"><div style="color:var(--text-faint); font-size:12.5px; padding:8px 0;">Fetching live price…</div></div>';
+    }
+    if (q.status === 'error') {
+      return '<div class="wl-price-row"><div style="color:var(--text-faint); font-size:11.5px; padding:8px 0; line-height:1.5;">Live price unavailable right now (' + esc(q.error) + '). <button class="btn-ghost wl-refresh" data-sym="' + esc(symbol) + '" style="padding:3px 9px; font-size:10.5px;">Retry</button></div></div>';
+    }
+    var cls = q.change == null ? '' : (q.change >= 0 ? 'gain' : 'loss');
+    var changeStr = q.change == null ? '' : (q.change >= 0 ? '+' : '') + q.change.toFixed(2) + ' (' + (q.changePct >= 0 ? '+' : '') + q.changePct.toFixed(2) + '%)';
+    return '<div class="wl-price-row">' +
+      '<div><div class="wl-price">' + q.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '</div>' +
+      (changeStr ? '<div class="wl-change ' + cls + '">' + changeStr + ' today</div>' : '') + '</div>' +
+      '<div class="wl-spark">' + sparklineSvg(q.points, 110, 34) + '</div>' +
+      '</div>' +
+      '<div class="wl-asof">As of ' + new Date(q.asOf).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }) + ' <button class="btn-ghost wl-refresh" data-sym="' + esc(symbol) + '" style="padding:2px 8px; font-size:10px; margin-left:4px;">↻</button></div>';
   }
 
   function renderWatchlist(main) {
     var list = active(state.watchlist);
-    var head = '<div class="page-head"><div><div class="page-title">Watchlist</div><div class="page-sub">Symbols you track, with a volume profile built from your own trade history</div></div></div>' +
+    var head = '<div class="page-head"><div><div class="page-title">Watchlist</div><div class="page-sub">Live prices for the symbols you track</div></div></div>' +
       '<div class="panel" style="margin-bottom:18px;"><div style="display:flex; gap:10px;">' +
-      '<input id="wlSymbolInput" class="search-input" placeholder="Add a symbol (e.g. ES, AAPL, BTCUSD)" style="text-transform:uppercase;">' +
+      '<input id="wlSymbolInput" class="search-input" placeholder="Add a symbol (e.g. ES, NQ, AAPL, BTCUSD)" style="text-transform:uppercase;">' +
       '<button class="btn-primary" style="width:auto;" id="wlAddBtn">+ Add</button>' +
       '</div></div>';
     if (!list.length) {
       main.innerHTML = head + '<div class="panel"><div class="empty-state"><div class="em-title">No symbols tracked yet</div>' +
-        '<div class="em-sub">Add a symbol above. Trades you\'ve logged against it build a volume profile automatically — no market-data connection needed.</div></div></div>';
+        '<div class="em-sub">Add a symbol above — futures roots (ES, NQ, YM…), stocks, or crypto pairs. Live prices come from Yahoo Finance\'s public feed.</div></div></div>';
     } else {
+      list.forEach(function (w) { ensureQuote(w.symbol); });
       var cards = list.map(function (w) {
-        var profile = volumeProfileForSymbol(w.symbol);
-        var trades = profile.trades;
+        var trades = active(state.trades).filter(function (t) { return (t.symbol || '').toUpperCase() === w.symbol.toUpperCase(); });
         var net = trades.reduce(function (s, t) { return s + (Number(t.pnl) || 0); }, 0);
         var wins = trades.filter(function (t) { return Number(t.pnl) > 0; }).length;
         var wr = trades.length ? Math.round(wins / trades.length * 100) : 0;
-        var last = trades.slice().sort(function (a, b) { return (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')); }).pop();
-        var lastPrice = last && last.exit !== '' && last.exit != null ? last.exit : (last ? last.entry : null);
         return '<div class="panel">' +
-          '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">' +
-          '<div><div style="font-size:16px; font-weight:700; font-family:var(--font-mono);">' + esc(w.symbol) + '</div>' +
-          '<div style="font-size:11px; color:var(--text-faint); margin-top:2px;">' + trades.length + ' trades logged' + (wr ? ' · ' + wr + '% win rate' : '') + '</div></div>' +
+          '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">' +
+          '<div style="font-size:16px; font-weight:700; font-family:var(--font-mono);">' + esc(w.symbol) + '</div>' +
           '<button class="row-del" onclick="App.removeWatchlistSymbol(\'' + w.id + '\')" title="Remove">✕</button>' +
           '</div>' +
-          '<div class="stat-grid" style="grid-template-columns:repeat(3,1fr); margin-bottom:12px;">' +
-          stat('Net P&L', fmtMoney(net), net >= 0 ? 'gain' : 'loss') +
-          stat('Last Logged Price', lastPrice == null ? '—' : String(lastPrice), '', 'your last fill, not a live quote') +
-          stat('Win Rate', trades.length ? wr + '%' : '—') +
-          '</div>' +
-          '<div style="font-family:var(--font-mono); font-size:9.5px; letter-spacing:0.08em; color:var(--text-faint); text-transform:uppercase; margin-bottom:8px;">Volume Profile (your fills)</div>' +
-          volumeProfileBars(profile) +
+          quoteBlock(w.symbol) +
+          (trades.length ? '<div class="wl-trade-summary">' + trades.length + ' trade' + (trades.length === 1 ? '' : 's') + ' logged · net <span style="color:var(--' + (net >= 0 ? 'gain' : 'loss') + ');">' + fmtMoney(net) + '</span> · ' + wr + '% win rate</div>' : '') +
           (w.notes ? '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft); font-size:12px; color:var(--text-dim);">' + esc(w.notes) + '</div>' : '') +
           '</div>';
       }).join('');
-      main.innerHTML = head + '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:18px;">' + cards + '</div>';
+      main.innerHTML = head + '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:18px;">' + cards + '</div>';
     }
     $('#wlAddBtn').addEventListener('click', addWatchlistSymbol);
     $('#wlSymbolInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addWatchlistSymbol(); } });
+    $all('.wl-refresh').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var ticker = mapToYahooTicker(btn.dataset.sym);
+        state.quotes[ticker] = null;
+        ensureQuote(btn.dataset.sym);
+        render();
+      });
+    });
   }
 
   function addWatchlistSymbol() {
@@ -2279,7 +2437,7 @@
 
       '<div class="panel">' +
       '<div class="panel-title">Drawdown guard</div>' +
-      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">Set a daily max-loss and the Dashboard HUD will track today\'s loss against it live, turning amber then red as you approach the limit.</div>' +
+      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">Set a daily max-loss and it\'s checked every time you log a trade — a warning shows on the Dashboard\'s risk alert banner at 70% used, and again once you hit the limit.</div>' +
       '<div class="form-field" style="max-width:260px;"><label>Daily loss limit ($)</label><input id="dailyLossLimit" type="number" step="any" value="' + esc(state.settings.dailyLossLimit || '') + '" placeholder="e.g. 500"></div>' +
       '<button class="btn-primary" style="width:auto; margin-top:8px;" id="saveDailyLimitBtn">Save limit</button>' +
       '</div>' +

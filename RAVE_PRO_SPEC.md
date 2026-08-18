@@ -9,35 +9,38 @@ RAVE has no backend and no server by design — it's a static site (GitHub Pages
 
 ---
 
-## 1. Multi-Asset Watchlist + Volume Profile — **SHIPPED (v1) / ROADMAP (live tick data)**
+## 1. Multi-Asset Watchlist — Live Prices — **SHIPPED (v2) / ROADMAP (true tick-level volume profile)**
 
 ### What shipped
-A `Watchlist` tab where you track a list of symbols and see, for each one, a **volume profile built from your own logged trades** — not live market ticks. For every price you've actually entered or exited at on that symbol, the app buckets it into a price zone and shows how much size you traded there and whether that zone was net profitable. This is honestly more useful for a journal than a generic market volume profile: it shows *your* supply/demand zones, not the market's.
+A `Watchlist` tab where you track a list of symbols (futures roots, stocks, or crypto pairs) and see **real live prices** for each — no API key, no backend. Quotes come from Yahoo Finance's public chart endpoint, fetched client-side and routed through the same CORS-relay fallback chain built for the Forex Factory macro calendar (tried direct first, then via `corsproxy.io`/`api.allorigins.win`). Each card shows the current price, today's change ($ and %), a small intraday sparkline, and an "as of" timestamp with a manual refresh button. Quotes are cached in memory for 90 seconds and are never persisted or synced — `state.quotes` is explicitly excluded from `buildSyncPayload()`, same as the AI auditor key.
 
-### Why not live tick-level volume profile
-A true market volume profile (volume-at-price from exchange tape) requires a paid, licensed market-data feed (e.g. a databento/Polygon/dxFeed-class provider) with a server-side key — CORS and licensing terms make this impossible to do honestly from a static page with no backend. Faking it with synthetic data would be actively misleading in a trading tool, so it's not shipped.
+v1 shipped a volume-profile chart built from your own logged fills instead of live prices; user feedback was that it duplicated information already visible elsewhere on the Dashboard, so it was replaced outright with live pricing (the actual "price of the indices" ask). Each card still shows a de-emphasized one-line summary of your own trade history on that symbol (count, net P&L, win rate) underneath the price.
 
 ### Data schema
 ```js
 // state.watchlist — array, stored under LocalStore key 'watchlist'
 {
   id: 'wl_...',
-  symbol: 'ES',           // uppercased, matched against trade.symbol
+  symbol: 'ES',           // uppercased, matched against trade.symbol and mapped to a Yahoo ticker
   notes: '',              // free text — thesis, key levels, etc.
   addedAt: <ms epoch>,
   updatedAt: <ms epoch>,
   deleted: false
 }
+
+// state.quotes — runtime-only cache, keyed by mapped Yahoo ticker, NEVER persisted/synced
+{ status: 'ok'|'loading'|'error', price, prevClose, change, changePct, points: [...], asOf: <ms epoch> }
 ```
 
 ### Component
-- **Watchlist tab** (new nav item): add/remove symbols, each rendered as a card.
-- **Symbol card**: trade count, win rate, net P&L, best/worst trade on that symbol, "last logged price" (most recent trade's exit — explicitly labeled as your own last fill, not a live quote), and the trade-history volume profile (horizontal bars per price bucket, green/red by that zone's net P&L, width by size traded).
-- Bucket width auto-scales to the symbol's price range (≈12 buckets).
+- **Watchlist tab**: add/remove symbols, each rendered as a card.
+- **Symbol card**: live price + today's change + intraday sparkline (`quoteBlock()`), a one-line trade-history summary, and any notes.
+- Futures roots (ES, NQ, YM, RTY, CL, GC, SI, NG, ZB, ZN, ZF, HG, VIX) map to their Yahoo continuous-contract/index tickers; common crypto pairs (BTCUSD, ETHUSD, …) map to `-USD` tickers; anything else is passed through as-is (stocks/ETFs).
+- The same quote fetcher (`ensureQuote`/`getQuote`/`sparklineSvg`) is reused by the Dashboard's HUD strip: the strip's four cells are Today's P&L, Trades Today, a live VIX reading + sparkline (`vixHudCell()` — replaced a duplicate on-device Rule Adherence % that was already shown in full on the Coach tab), and Max Drawdown (`maxDrawdownStats()`, shared with the Dashboard equity curve so the two numbers can't drift apart — replaced a daily-loss progress bar that moved into the risk-guardrail alert banner, see §6).
 
 ### Roadmap extension (needs infra)
-- Live last-price ticker per symbol: needs a market-data API key (e.g. Finnhub/Twelve Data free tier is CORS-friendly for quotes, though not for tick-level volume). Settings would gain an optional "Market data API key" field, same opt-in pattern as the AI auditor key below.
-- True volume-at-price overlay from exchange tape: needs a paid data vendor + a backend to hold the key server-side (a browser-exposed key for a paid feed is a real liability, unlike a free-tier quote key).
+- True volume-at-price overlay from exchange tape requires a paid, licensed market-data vendor (databento/Polygon/dxFeed-class) with a server-side key — CORS and licensing terms make this impossible to do honestly from a static page with no backend. Faking it with synthetic data would be actively misleading in a trading tool, so it's not shipped.
+- Yahoo's public endpoint is undocumented/unofficial and could change or rate-limit without notice; if it becomes unreliable, a documented free-tier quote API (Finnhub, Twelve Data) with an optional user-supplied key would be the fallback, following the same opt-in pattern as the AI auditor key.
 
 ---
 
@@ -65,8 +68,8 @@ RAVE already had a "Prop Firms" account model (firm, size, profit target, drawdo
 }
 ```
 
-### Component: Fleet Summary (top of Prop Firms tab)
-Aggregate strip across every active account + untagged/personal trades: total net P&L, total R (sum of realized R-multiples across all trades with Planned Risk set), account count, worst single account-day. This is the "one cohesive dashboard" view — every account card below it still shows its own rules and meters, unchanged.
+### Component: Accounts table + Combined Equity chart (top of Accounts tab)
+A balance-forward table (`accountsTable()`) is the primary view: one row per account with status, running balance, today's P&L, net P&L, drawdown buffer, and trade count, plus a combined-balance/today total in the header — built to make "how many accounts do I have and what's each one worth" answerable at a glance. Below it, `accountsEquityChart()` plots cumulative P&L for every account with trades (one line per account, fixed categorical color order, colorblind-validated for dark mode) plus a neutral dashed line for personal/untagged trades, each sequence-indexed like the Dashboard equity curve, with direct end-of-line labels (account name + net P&L). This replaced an earlier stat-grid "Fleet Summary" panel that duplicated numbers already visible in the table and per-account cards. Every account card below it still shows its own rules and meters, unchanged.
 
 ### Component: Payout & Milestone Roadmap (per account, shown for `funded`/`passed` accounts)
 - Buffer above max drawdown: `maxDrawdown − trailingUsed` (or vs static balance if `ddType === 'static'`), shown as $ and %.
@@ -93,7 +96,7 @@ True copy-trading drift (latency between a parent account's fill and a slave acc
 }
 ```
 
-### Component: Copy-Trade Drift table (Fleet section of Prop Firms tab)
+### Component: Copy-Trade Drift table (bottom of Accounts tab)
 Per slave account with a linked parent: average price drift (slave entry − parent fill, direction-adjusted), average latency in minutes (from `time` vs `parentFillTime`), and trade count with both fields filled in. Shown only when at least one slave account with data exists.
 
 ### Roadmap extension
@@ -160,13 +163,14 @@ RAVE logs trades after the fact — it doesn't sit in front of your broker's ord
   overfreqWindow: 5,         // ...within this many minutes
   slippageThreshold: ''      // $ — optional
 }
+// state.settings.dailyLossLimit — $ — folded into the same alert feed (defaultGuardrails() merges it in)
 ```
 ```js
 function riskAlerts(todaysTrades, guardrails) → [{ kind, message, severity }]
 ```
 
 ### Component
-A red/amber alert banner at the top of Command Center whenever, among today's logged trades: 2 (configurable) max-loss trades landed within 30 (configurable) minutes of each other, more than 3 (configurable) trades were logged within any 5-minute window (the over-frequency/revenge-trading signal), or a trade's slippage (see §7) exceeded your configured threshold. When triggered, logging another trade prompts an explicit "are you sure" confirmation instead of a plain silent save.
+A red/amber alert banner at the top of the Dashboard whenever, among today's logged trades: 2 (configurable) max-loss trades landed within 30 (configurable) minutes of each other, more than 3 (configurable) trades were logged within any 5-minute window (the over-frequency/revenge-trading signal), a trade's slippage (see §7) exceeded your configured threshold, or today's net loss crossed 70%/100% of your configured daily loss limit. When triggered, logging another trade prompts an explicit "are you sure" confirmation instead of a plain silent save. (The daily-loss check previously lived as its own progress-bar cell in the Dashboard HUD strip — that cell was replaced with a live VIX reading, so the check moved here instead of being dropped.)
 
 ### Roadmap extension — real lockout
 Actually disabling order entry the moment a rule trips requires sitting between you and your broker (a broker API / DOM integration), which is a different category of product than a journal — noted here so the distinction is explicit, not glossed over.
@@ -198,9 +202,9 @@ Automatic slippage capture (no manual entry) needs the broker's actual order-rou
 
 | Feature | Status |
 |---|---|
-| Watchlist + trade-history volume profile | Shipped |
-| Live market volume profile / live quotes | Roadmap (needs data-feed API key) |
-| Fleet dashboard (aggregate P&L/R across accounts) | Shipped |
+| Watchlist — live prices (Yahoo Finance, no API key) | Shipped |
+| True volume-at-price overlay from exchange tape | Roadmap (needs a paid, licensed data feed) |
+| Accounts table + combined equity chart across accounts | Shipped |
 | Payout & milestone roadmap (buffer, split, next payout) | Shipped |
 | Copy-trading drift (manual parent/slave fill entry) | Shipped |
 | Copy-trading drift (live broker feed) | Roadmap (needs broker API) |
