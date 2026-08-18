@@ -352,8 +352,35 @@
     return out;
   }
 
+  function mistakePattern(trades) {
+    var t = active(trades).filter(function (tr) { return tr.mistakes && tr.mistakes.length; });
+    if (t.length < MIN_GROUP) return [];
+    var by = {};
+    t.forEach(function (tr) {
+      (tr.mistakes || []).forEach(function (m) {
+        (by[m] = by[m] || []).push(tr);
+      });
+    });
+    var rows = Object.keys(by).map(function (k) {
+      var arr = by[k];
+      return { m: k, n: arr.length, net: sum(arr, pnlOf) };
+    }).filter(function (r) { return r.n >= MIN_GROUP; });
+    if (!rows.length) return [];
+    rows.sort(function (a, b) { return a.net - b.net; });
+    var worst = rows[0];
+    var out = [];
+    if (worst.net < 0) {
+      out.push({
+        kind: 'Mistakes', title: '"' + worst.m + '" is your costliest tagged mistake',
+        body: fmtMoney(worst.net) + ' net across ' + worst.n + ' trades tagged "' + worst.m + '". Cutting this one habit would move your numbers the most.',
+        confidence: confidenceFor(worst.n), n: worst.n, impact: worst.net
+      });
+    }
+    return out;
+  }
+
   function buildInsights(trades) {
-    var detectors = [dayOfWeekPattern, tagPattern, emotionPattern, streakPattern, ruleAdherencePattern, symbolPattern, macroEventPattern, outlierPattern, sizingPattern, timeOfDayPattern];
+    var detectors = [dayOfWeekPattern, tagPattern, emotionPattern, streakPattern, ruleAdherencePattern, symbolPattern, macroEventPattern, outlierPattern, sizingPattern, timeOfDayPattern, mistakePattern];
     var out = [];
     detectors.forEach(function (fn) {
       try {
@@ -429,7 +456,10 @@
     if (/mood|emotion|feel|mindset|psycholog/.test(q)) {
       return joinInsightBodies(pickInsightsByKind(insights, ['Mindset']), 'Set the "mindset" field when logging trades — once there\'s a spread of moods logged, I can show you which emotional states cost you money.');
     }
-    if (/lose|loss|losing|weak|worst|mistake/.test(q)) {
+    if (/mistake|rule break|revenge trade|chasing|fomo entry/.test(q)) {
+      return joinInsightBodies(pickInsightsByKind(insights, ['Mistakes']), 'Not enough tagged mistakes yet to say anything reliable — tag "Chasing", "Moved Stop", etc. on the trade form as they happen and the cost adds up here.');
+    }
+    if (/lose|loss|losing|weak|worst/.test(q)) {
       var neg = insights.filter(function (i) { return i.impact < 0; });
       return joinInsightBodies(neg, "Nothing stands out as a clear leak yet at current sample sizes — that's a genuinely good sign, or you just need more logged trades.");
     }
