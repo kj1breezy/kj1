@@ -7,6 +7,7 @@
   var state = {
     trades: [],
     accounts: [],
+    watchlist: [],
     settings: { driveClientId: '' },
     calendar: null,
     calendarMeta: null,
@@ -16,6 +17,7 @@
     calMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     calSelectedDay: null,
     coachThread: [], // {role:'user'|'assistant', text}
+    aiAudit: { status: 'idle', text: '', error: '' }, // 'idle'|'loading'|'done'|'error' — runtime only, never persisted
     loaded: false,
     deferredInstallPrompt: null
   };
@@ -95,6 +97,157 @@
     if (r == null) return '—';
     return (r >= 0 ? '+' : '') + r.toFixed(2) + 'R';
   }
+
+  // ---- Execution slippage: planned entry vs actual fill, direction-adjusted ----
+  // Positive = you got a worse price than planned (adverse slippage), negative = better.
+  function slippage(t) {
+    var planned = Number(t.plannedEntryPrice);
+    var actual = Number(t.entry);
+    if (!planned || isNaN(actual)) return null;
+    var raw = actual - planned;
+    return t.direction === 'short' ? -raw : raw;
+  }
+
+  // ---- Copy-trade drift: parent fill vs this (slave) trade's actual fill ----
+  function driftForTrade(t) {
+    var parentPrice = Number(t.parentFillPrice);
+    var actual = Number(t.entry);
+    if (!parentPrice || isNaN(actual)) return null;
+    var priceDrift = t.direction === 'short' ? -(actual - parentPrice) : (actual - parentPrice);
+    var latency = null;
+    if (t.parentFillTime && t.time) {
+      var a = t.parentFillTime.split(':'), b = t.time.split(':');
+      if (a.length >= 2 && b.length >= 2) {
+        var m1 = parseInt(a[0], 10) * 60 + parseInt(a[1], 10);
+        var m2 = parseInt(b[0], 10) * 60 + parseInt(b[1], 10);
+        if (!isNaN(m1) && !isNaN(m2)) latency = m2 - m1;
+      }
+    }
+    return { priceDrift: priceDrift, latency: latency };
+  }
+
+  // ---- Rule-based trade grading (A-F), driven by state.settings.tradingRules ----
+  function gradeTrade(t, rules) {
+    rules = rules || {};
+    var score = 100;
+    var reasons = [];
+    if (rules.maxSize && Number(t.size) > Number(rules.maxSize)) {
+      score -= 25; reasons.push('Size ' + t.size + ' exceeded your max of ' + rules.maxSize);
+    }
+    if (rules.noTradeStart && rules.noTradeEnd && t.time) {
+      var mins = (function (ts) { var p = (ts || '').split(':'); var h = parseInt(p[0], 10), m = parseInt(p[1], 10); return isNaN(h) ? null : h * 60 + (isNaN(m) ? 0 : m); })(t.time);
+      var startM = (function (ts) { var p = ts.split(':'); return parseInt(p[0], 10) * 60 + (parseInt(p[1], 10) || 0); })(rules.noTradeStart);
+      var endM = (function (ts) { var p = ts.split(':'); return parseInt(p[0], 10) * 60 + (parseInt(p[1], 10) || 0); })(rules.noTradeEnd);
+      if (mins != null && !isNaN(startM) && !isNaN(endM)) {
+        var inWindow = startM <= endM ? (mins >= startM && mins <= endM) : (mins >= startM || mins <= endM);
+        if (inWindow) { score -= 25; reasons.push('Entered inside your no-trade window (' + rules.noTradeStart + '–' + rules.noTradeEnd + ')'); }
+      }
+    }
+    if (rules.requireStop && !(Number(t.plannedRisk) > 0)) {
+      score -= 20; reasons.push('No Planned Risk / stop set');
+    }
+    if (rules.forbiddenMistakes && rules.forbiddenMistakes.length && t.mistakes && t.mistakes.length) {
+      var hit = t.mistakes.filter(function (m) { return rules.forbiddenMistakes.indexOf(m) > -1; });
+      if (hit.length) { score -= 15 * hit.length; reasons.push('Tagged with forbidden mistake(s): ' + hit.join(', ')); }
+    }
+    if (t.rulesFollowed === false) { score -= 20; reasons.push("Marked as not following your trading plan"); }
+    score = Math.max(0, Math.min(100, score));
+    var grade = score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F';
+    return { score: score, grade: grade, reasons: reasons };
+  }
+
+  function ruleAdherenceReport(trades, rules) {
+    var graded = trades.map(function (t) { return { t: t, g: gradeTrade(t, rules) }; });
+    if (!graded.length) return null;
+    var avg = graded.reduce(function (a, x) { return a + x.g.score; }, 0) / graded.length;
+    var overallGrade = avg >= 90 ? 'A' : avg >= 75 ? 'B' : avg >= 60 ? 'C' : avg >= 40 ? 'D' : 'F';
+    var reasonCounts = {};
+    graded.forEach(function (x) { x.g.reasons.forEach(function (r) { reasonCounts[r] = (reasonCounts[r] || 0) + 1; }); });
+    var topReasons = Object.keys(reasonCounts).map(function (k) { return { reason: k, n: reasonCounts[k] }; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 5);
+    var worst = graded.filter(function (x) { return x.g.reasons.length; }).sort(function (a, b) { return a.g.score - b.g.score; }).slice(0, 5);
+    return { avg: avg, overallGrade: overallGrade, topReasons: topReasons, worst: worst, n: graded.length };
+  }
+
+  // ---- Risk / circuit-breaker alerts, scanned over TODAY's trades ----
+  function defaultGuardrails() {
+    var g = (state.settings && state.settings.riskGuardrails) || {};
+    return {
+      maxConsecLossWindow: Number(g.maxConsecLossWindow) || 30,
+      maxConsecLosses: Number(g.maxConsecLosses) || 2,
+      overfreqCount: Number(g.overfreqCount) || 3,
+      overfreqWindow: Number(g.overfreqWindow) || 5,
+      slippageThreshold: g.slippageThreshold === '' || g.slippageThreshold == null ? null : Number(g.slippageThreshold)
+    };
+  }
+  function timeToMinutes(ts) {
+    if (!ts) return null;
+    var p = ts.split(':');
+    var h = parseInt(p[0], 10), m = parseInt(p[1], 10);
+    if (isNaN(h)) return null;
+    return h * 60 + (isNaN(m) ? 0 : m);
+  }
+  function riskAlerts(todaysTrades, guardrails) {
+    guardrails = guardrails || defaultGuardrails();
+    var alerts = [];
+    var timed = todaysTrades.filter(function (t) { return t.time; }).slice().sort(function (a, b) { return timeToMinutes(a.time) - timeToMinutes(b.time); });
+
+    // 2+ max losses within N minutes
+    for (var i = 0; i < timed.length; i++) {
+      if (Number(timed[i].pnl) >= 0) continue;
+      var group = [timed[i]];
+      for (var j = i + 1; j < timed.length; j++) {
+        if (Number(timed[j].pnl) >= 0) continue;
+        if (timeToMinutes(timed[j].time) - timeToMinutes(timed[i].time) <= guardrails.maxConsecLossWindow) group.push(timed[j]);
+      }
+      if (group.length >= guardrails.maxConsecLosses) {
+        alerts.push({ kind: 'losses', severity: 'loss', message: group.length + ' losing trades within ' + guardrails.maxConsecLossWindow + ' minutes — the classic revenge-trade window. Consider stepping away.' });
+        break;
+      }
+    }
+    // over-frequency execution (revenge/overtrading signal)
+    for (var k = 0; k < timed.length; k++) {
+      var win = timed.filter(function (t) { return timeToMinutes(t.time) - timeToMinutes(timed[k].time) >= 0 && timeToMinutes(t.time) - timeToMinutes(timed[k].time) <= guardrails.overfreqWindow; });
+      if (win.length > guardrails.overfreqCount) {
+        alerts.push({ kind: 'overfreq', severity: 'warn', message: win.length + ' trades logged within ' + guardrails.overfreqWindow + ' minutes — over-frequency execution can signal revenge trading.' });
+        break;
+      }
+    }
+    // slippage over threshold
+    if (guardrails.slippageThreshold != null) {
+      var worstSlip = null;
+      todaysTrades.forEach(function (t) {
+        var s = slippage(t);
+        if (s != null && s > guardrails.slippageThreshold && (worstSlip == null || s > worstSlip)) worstSlip = s;
+      });
+      if (worstSlip != null) alerts.push({ kind: 'slippage', severity: 'warn', message: 'Slippage of ' + worstSlip.toFixed(2) + ' exceeded your ' + guardrails.slippageThreshold + ' threshold on a trade today.' });
+    }
+    return alerts;
+  }
+
+  // ---- Trade-history "volume profile": buckets your own fills by price ----
+  function volumeProfileForSymbol(symbol) {
+    var trades = active(state.trades).filter(function (t) { return (t.symbol || '').toUpperCase() === symbol.toUpperCase(); });
+    var prices = [];
+    trades.forEach(function (t) {
+      var size = Number(t.size) || 1;
+      if (t.entry !== '' && t.entry != null && !isNaN(Number(t.entry))) prices.push({ price: Number(t.entry), size: size, pnl: Number(t.pnl) || 0 });
+      if (t.exit !== '' && t.exit != null && !isNaN(Number(t.exit))) prices.push({ price: Number(t.exit), size: size, pnl: 0 });
+    });
+    if (!prices.length) return { trades: trades, buckets: [] };
+    var vals = prices.map(function (p) { return p.price; });
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var range = (max - min) || Math.max(1, min * 0.01);
+    var N = 12;
+    var buckets = [];
+    for (var i = 0; i < N; i++) buckets.push({ lo: min + (range / N) * i, hi: min + (range / N) * (i + 1), size: 0, pnl: 0 });
+    prices.forEach(function (p) {
+      var idx = Math.min(N - 1, Math.floor(((p.price - min) / range) * N));
+      if (idx < 0) idx = 0;
+      buckets[idx].size += p.size;
+      buckets[idx].pnl += p.pnl;
+    });
+    return { trades: trades, buckets: buckets };
+  }
   function toast(msg, isError) {
     var root = $('#toastRoot');
     root.innerHTML = '';
@@ -151,12 +304,15 @@
   }
 
   function buildSyncPayload() {
-    return { version: 1, syncedAt: Date.now(), trades: state.trades, accounts: state.accounts, settings: state.settings };
+    // Note: the AI Auditor API key (LS_PREFIX+'aiApiKey') is deliberately never
+    // included here — it stays local to this device only, never touches Drive.
+    return { version: 1, syncedAt: Date.now(), trades: state.trades, accounts: state.accounts, watchlist: state.watchlist, settings: state.settings };
   }
 
   function loadLocal() {
     state.trades = LocalStore.get('trades') || [];
     state.accounts = LocalStore.get('accounts') || [];
+    state.watchlist = LocalStore.get('watchlist') || [];
     var settings = LocalStore.get('settings');
     if (settings) state.settings = Object.assign({}, state.settings, settings);
   }
@@ -164,8 +320,15 @@
   function persistLocal() {
     LocalStore.set('trades', state.trades);
     LocalStore.set('accounts', state.accounts);
+    LocalStore.set('watchlist', state.watchlist);
     LocalStore.set('settings', state.settings);
   }
+
+  // AI Auditor API key: intentionally stored separately from state.settings so
+  // it never rides along in buildSyncPayload / Drive sync / JSON export. It is
+  // read fresh at call time, not cached in `state`.
+  function getAiApiKey() { try { return localStorage.getItem(LS_PREFIX + 'aiApiKey') || ''; } catch (e) { return ''; } }
+  function setAiApiKey(v) { try { if (v) localStorage.setItem(LS_PREFIX + 'aiApiKey', v); else localStorage.removeItem(LS_PREFIX + 'aiApiKey'); } catch (e) {} }
 
   function scheduleDriveSync() {
     if (!window.DriveSync || !window.DriveSync.isConnected()) return;
@@ -186,6 +349,7 @@
       if (remote) {
         state.trades = mergeById(state.trades, remote.trades);
         state.accounts = mergeById(state.accounts, remote.accounts);
+        state.watchlist = mergeById(state.watchlist, remote.watchlist);
         if (remote.settings) state.settings = Object.assign({}, remote.settings, state.settings);
         persistLocal();
       }
@@ -213,11 +377,13 @@
       if (remote) {
         var beforeTrades = JSON.stringify(state.trades);
         var beforeAccounts = JSON.stringify(state.accounts);
+        var beforeWatchlist = JSON.stringify(state.watchlist);
         state.trades = mergeById(state.trades, remote.trades);
         state.accounts = mergeById(state.accounts, remote.accounts);
+        state.watchlist = mergeById(state.watchlist, remote.watchlist);
         if (remote.settings) state.settings = Object.assign({}, remote.settings, state.settings);
         persistLocal();
-        if (JSON.stringify(state.trades) !== beforeTrades || JSON.stringify(state.accounts) !== beforeAccounts) {
+        if (JSON.stringify(state.trades) !== beforeTrades || JSON.stringify(state.accounts) !== beforeAccounts || JSON.stringify(state.watchlist) !== beforeWatchlist) {
           render();
         }
       }
@@ -301,6 +467,7 @@
     else if (state.tab === 'log') renderLog(main);
     else if (state.tab === 'calendar') renderCalendar(main);
     else if (state.tab === 'macro') renderMacro(main);
+    else if (state.tab === 'watchlist') renderWatchlist(main);
     else if (state.tab === 'props') renderProps(main);
     else if (state.tab === 'coach') renderCoach(main);
     else if (state.tab === 'settings') renderSettings(main);
@@ -384,6 +551,20 @@
       hudCell('Trades Today', String(td.count)) +
       hudCell('Rule Adherence', td.adherence == null ? '—' : (td.adherence + '%'), adhCls) +
       '<div class="hud-cell hud-guard"><div class="hud-label">Drawdown Guard</div>' + guardInner + '</div>' +
+      '</div>';
+  }
+
+  function riskAlertBanner() {
+    var today = todayStr();
+    var todays = active(state.trades).filter(function (t) { return t.date === today; });
+    var alerts = riskAlerts(todays);
+    if (!alerts.length) return '';
+    return '<div class="panel" style="border-color:rgba(255,92,114,0.4); background:linear-gradient(160deg, var(--loss-dim), transparent 70%); margin-bottom:16px;">' +
+      '<div class="panel-title" style="color:var(--loss);">⚠ Risk Guardrail' + (alerts.length > 1 ? 's' : '') + ' Triggered — Today</div>' +
+      alerts.map(function (a) {
+        return '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.55; padding:5px 0;">' + esc(a.message) + '</div>';
+      }).join('') +
+      '<div style="font-size:10.5px; color:var(--text-faint); margin-top:8px;">Configurable in Settings → Risk Guardrails. This is a warning, not a lockout — RAVE can\'t block your broker, only flag the pattern.</div>' +
       '</div>';
   }
 
@@ -486,7 +667,7 @@
     var s = computeStats(state.trades);
     if (!active(state.trades).length) {
       main.innerHTML =
-        '<div class="page-head"><div><div class="page-title">Command Center</div><div class="page-sub">Your performance, at a glance</div></div></div>' +
+        '<div class="page-head"><div><div class="page-title">Dashboard</div><div class="page-sub">Your performance, at a glance</div></div></div>' +
         installBanner() +
         '<div class="panel"><div class="empty-state">' +
         '<div class="em-title">The ledger is empty</div>' +
@@ -502,16 +683,17 @@
     var byEmotion = groupBy(state.trades, function (t) { return t.emotion; }).slice(0, 6);
 
     main.innerHTML =
-      '<div class="page-head"><div><div class="page-title">Command Center</div><div class="page-sub">' + s.count + ' trades logged</div></div></div>' +
+      '<div class="page-head"><div><div class="page-title">Dashboard</div><div class="page-sub">' + s.count + ' trades logged</div></div></div>' +
       installBanner() +
       hudStrip() +
+      riskAlertBanner() +
       sessionBrief(s) +
       '<div class="stat-grid">' +
       stat('Net P&L', fmtMoney(s.net), s.net >= 0 ? 'gain' : 'loss') +
       stat('Win Rate', s.winRate.toFixed(1) + '%', '', s.wins + 'W / ' + s.losses + 'L') +
       stat('Avg Risk:Reward', s.avgRR === null ? '—' : (s.avgRR.toFixed(2) + 'R'), '', 'avg win ÷ avg loss') +
       stat('Profit Factor', pf) +
-      stat('Current Streak', s.currentStreak + ' ' + (s.streakType === 'win' ? 'Win' : s.streakType === 'loss' ? 'Loss' : 'B/E') + (s.currentStreak > 1 ? 's' : ''), s.streakType === 'win' ? 'gain' : s.streakType === 'loss' ? 'loss' : '') +
+      stat('Current Streak', s.currentStreak + ' ' + (s.streakType === 'win' ? (s.currentStreak > 1 ? 'Wins' : 'Win') : s.streakType === 'loss' ? (s.currentStreak > 1 ? 'Losses' : 'Loss') : 'B/E'), s.streakType === 'win' ? 'gain' : s.streakType === 'loss' ? 'loss' : '') +
       '</div>' +
       '<div class="dash-grid">' +
       '<div class="panel"><div class="panel-title">Equity Curve <span style="font-weight:400; font-size:10px; color:var(--text-faint); text-transform:none; letter-spacing:0;">shaded = drawdown from high-water mark</span></div>' + equityCurveSvg(s) + '</div>' +
@@ -897,10 +1079,18 @@
   // ==========================================================================
   function openTradeModal(trade) {
     var isEdit = !!trade;
+    if (!isEdit) {
+      var todaysNow = active(state.trades).filter(function (t2) { return t2.date === todayStr(); });
+      var liveAlerts = riskAlerts(todaysNow);
+      if (liveAlerts.length) {
+        var ok = confirm('Risk guardrail triggered today:\n\n' + liveAlerts.map(function (a) { return '• ' + a.message; }).join('\n') + '\n\nLog another trade anyway?');
+        if (!ok) return;
+      }
+    }
     var t = trade || {
       id: uid(), date: todayStr(), time: '', exitTime: '', symbol: '', market: 'stock', direction: 'long',
       entry: '', exit: '', size: '', fees: '', pnl: '', tags: [], notes: '', emotion: '', rulesFollowed: null,
-      plannedRisk: '', mae: '', mfe: '', mistakes: []
+      plannedRisk: '', mae: '', mfe: '', mistakes: [], plannedEntryPrice: '', parentFillPrice: '', parentFillTime: ''
     };
     var selectedMistakes = (t.mistakes || []).slice();
     var root = $('#modalRoot');
@@ -923,7 +1113,16 @@
       field('Planned Risk ($) — for R-multiple', 'number', 'plannedRisk', t.plannedRisk, false, 'what you were willing to lose') +
       field('Worst point during trade ($, MAE)', 'number', 'mae', t.mae, false, 'max drawdown while open') +
       field('Best point during trade ($, MFE)', 'number', 'mfe', t.mfe, false, 'max unrealized profit while open') +
+      field('Planned Entry Price (for slippage)', 'number', 'plannedEntryPrice', t.plannedEntryPrice, false, 'the price you intended to get') +
       '</div>' +
+      '<div class="form-field full-span calc-box"><label>Position Sizing Calculator — optional, fills Planned Risk above</label>' +
+      '<div class="calc-row">' +
+      '<input type="number" step="any" id="calc_size" placeholder="Contracts / size">' +
+      '<input type="number" step="any" id="calc_tickValue" placeholder="Tick value ($)">' +
+      '<input type="number" step="any" id="calc_stopTicks" placeholder="Stop distance (ticks)">' +
+      '<button type="button" class="btn-ghost" id="calcApplyBtn" style="flex-shrink:0;">= $<span id="calcResult">0.00</span> → Apply</button>' +
+      '</div></div>' +
+      '<div class="form-field full-span" id="parentFillWrap"></div>' +
       field('Tags / Strategy (comma separated)', 'text', 'tags', (t.tags || []).join(', '), false, 'breakout, earnings play, ORB', true) +
       '<div class="form-field full-span"><label>Mistakes / rule breaks (tap to toggle)</label>' +
       '<div class="pill-row" id="mistakeChips">' +
@@ -933,7 +1132,7 @@
       '</div></div>' +
       selectFieldFull('Mindset while trading', 'emotion', [{ v: '', l: '— none —' }].concat(EMOTIONS.map(function (e) { return { v: e, l: e }; })), t.emotion) +
       selectFieldFull('Account', 'accountId', [{ v: '', l: '— personal / untagged —' }].concat(active(state.accounts).map(function (a) { return { v: a.id, l: a.firm + (a.nickname ? ' · ' + a.nickname : '') }; })), t.accountId || '') +
-      '<div class="form-field full-span"><label>Notes</label><textarea id="f_notes" placeholder="What was your thesis? What did you do well or poorly?">' + esc(t.notes || '') + '</textarea></div>' +
+      '<div class="form-field full-span"><label style="display:flex; justify-content:space-between; align-items:center;">Notes<button type="button" id="voiceBtn" class="mic-btn" title="Voice-to-journal">🎙</button></label><textarea id="f_notes" placeholder="What was your thesis? What did you do well or poorly?">' + esc(t.notes || '') + '</textarea></div>' +
       '<div class="form-field full-span"><label>Screenshot</label>' +
       '<div class="file-row"><input type="file" id="f_screenshot" accept="image/*"><span id="shotPreviewWrap"></span></div>' +
       '</div>' +
@@ -971,6 +1170,72 @@
         else { selectedMistakes.push(m); chip.classList.add('active'); }
       });
     });
+
+    // ---- Position sizing calculator: size × tick value × stop ticks -> $ risk ----
+    function recalcCalc() {
+      var size = parseFloat($('#calc_size').value);
+      var tv = parseFloat($('#calc_tickValue').value);
+      var st = parseFloat($('#calc_stopTicks').value);
+      var risk = (!isNaN(size) && !isNaN(tv) && !isNaN(st)) ? Math.abs(size * tv * st) : 0;
+      $('#calcResult').textContent = risk.toFixed(2);
+      return risk;
+    }
+    ['calc_size', 'calc_tickValue', 'calc_stopTicks'].forEach(function (id) {
+      $('#' + id).addEventListener('input', recalcCalc);
+    });
+    $('#calcApplyBtn').addEventListener('click', function () {
+      var risk = recalcCalc();
+      if (risk > 0) { $('#f_plannedRisk').value = risk.toFixed(2); toast('Planned Risk set to ' + fmtMoney(risk)); }
+      else toast('Fill in size, tick value, and stop distance first', true);
+    });
+
+    // ---- Copy-trade drift: only show Parent Fill fields when the selected account is a slave ----
+    function updateParentFillWrap() {
+      var accId = $('#f_accountId').value;
+      var acc = active(state.accounts).filter(function (a) { return a.id === accId; })[0];
+      var wrap = $('#parentFillWrap');
+      if (!wrap) return;
+      if (acc && acc.role === 'slave') {
+        wrap.innerHTML =
+          '<label>Copy-Trade Drift — parent account\'s actual fill</label>' +
+          '<div class="calc-row">' +
+          '<input type="number" step="any" id="f_parentFillPrice" placeholder="Parent fill price" value="' + esc(t.parentFillPrice || '') + '">' +
+          '<input type="time" id="f_parentFillTime" value="' + esc(t.parentFillTime || '') + '">' +
+          '</div>';
+      } else {
+        wrap.innerHTML = '';
+      }
+    }
+    $('#f_accountId').addEventListener('change', updateParentFillWrap);
+    updateParentFillWrap();
+
+    // ---- Voice-to-journal: live transcription into Notes via Web Speech API ----
+    (function () {
+      var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      var btn = $('#voiceBtn');
+      if (!SR) {
+        btn.addEventListener('click', function () { toast('Voice input isn\'t supported in this browser — try Chrome or Edge', true); });
+        return;
+      }
+      var recognizing = false, recog = null, baseText = '';
+      btn.addEventListener('click', function () {
+        if (recognizing) { recog.stop(); return; }
+        baseText = $('#f_notes').value;
+        recog = new SR();
+        recog.continuous = true;
+        recog.interimResults = true;
+        recog.lang = 'en-US';
+        recog.onstart = function () { recognizing = true; btn.classList.add('listening'); btn.title = 'Listening… click to stop'; };
+        recog.onend = function () { recognizing = false; btn.classList.remove('listening'); btn.title = 'Voice-to-journal'; };
+        recog.onerror = function () { recognizing = false; btn.classList.remove('listening'); toast('Voice input error — check mic permissions', true); };
+        recog.onresult = function (e) {
+          var transcript = '';
+          for (var i = 0; i < e.results.length; i++) transcript += e.results[i][0].transcript;
+          $('#f_notes').value = (baseText ? baseText + ' ' : '') + transcript;
+        };
+        recog.start();
+      });
+    })();
 
     function closeModal() { root.innerHTML = ''; }
     $('#modalCloseBtn').addEventListener('click', closeModal);
@@ -1016,6 +1281,9 @@
         plannedRisk: $('#f_plannedRisk').value,
         mae: $('#f_mae').value,
         mfe: $('#f_mfe').value,
+        plannedEntryPrice: $('#f_plannedEntryPrice').value,
+        parentFillPrice: $('#f_parentFillPrice') ? $('#f_parentFillPrice').value : '',
+        parentFillTime: $('#f_parentFillTime') ? $('#f_parentFillTime').value : '',
         mistakes: selectedMistakes.slice(),
         tags: $('#f_tags').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
         notes: $('#f_notes').value,
@@ -1467,18 +1735,133 @@
     var cum = 0, peak = 0;
     sorted.forEach(function (t) { cum += Number(t.pnl) || 0; if (cum > peak) peak = cum; });
     var trailingUsed = peak - cum;
+    var staticUsed = net < 0 ? Math.abs(net) : 0; // static DD: measured off starting balance, not peak
+    var ddType = acc.ddType === 'static' ? 'static' : 'trailing';
+    var ddUsed = ddType === 'static' ? staticUsed : trailingUsed;
     var target = Number(acc.profitTarget) || 0;
     var maxDD = Number(acc.maxDrawdown) || 0;
     var dailyLimit = Number(acc.dailyLoss) || 0;
+    var tradingDays = Object.keys(byDay).length;
+    var minDays = Number(acc.minTradingDays) || 0;
+    var split = Number(acc.profitSplit);
+    var payoutEstimate = (split > 0 && net > 0) ? net * (split / 100) : null;
+    var rs = trades.map(rMultiple).filter(function (r) { return r != null; });
+    var cumR = rs.length ? rs.reduce(function (a, b) { return a + b; }, 0) : null;
     return {
       trades: trades, count: trades.length, net: net, byDay: byDay,
       worstDay: worstDay, worstDayDate: worstDayDate, peak: peak, trailingUsed: trailingUsed,
+      ddType: ddType, ddUsed: ddUsed, ddBuffer: maxDD > 0 ? Math.max(0, maxDD - ddUsed) : null,
+      tradingDays: tradingDays, minDays: minDays, daysBuffer: minDays > 0 ? Math.max(0, minDays - tradingDays) : null,
+      payoutEstimate: payoutEstimate, cumR: cumR,
       targetPct: target > 0 ? Math.max(0, Math.min(100, net / target * 100)) : null,
-      ddPct: maxDD > 0 ? Math.max(0, Math.min(100, trailingUsed / maxDD * 100)) : null,
+      ddPct: maxDD > 0 ? Math.max(0, Math.min(100, ddUsed / maxDD * 100)) : null,
       dailyBreached: dailyLimit > 0 && Math.abs(worstDay) >= dailyLimit,
-      ddBreached: maxDD > 0 && trailingUsed >= maxDD,
+      ddBreached: maxDD > 0 && ddUsed >= maxDD,
       passed: target > 0 && net >= target
     };
+  }
+
+  function fleetSummary(accts) {
+    var untaggedTrades = active(state.trades).filter(function (t) { return !t.accountId; });
+    var allNet = active(state.trades).reduce(function (s, t) { return s + (Number(t.pnl) || 0); }, 0);
+    var allRs = active(state.trades).map(rMultiple).filter(function (r) { return r != null; });
+    var cumR = allRs.length ? allRs.reduce(function (a, b) { return a + b; }, 0) : null;
+    var openRiskToday = active(state.trades).filter(function (t) { return t.date === todayStr(); })
+      .reduce(function (s, t) { return s + (Number(t.plannedRisk) || 0); }, 0);
+    var worstAccountDay = null;
+    accts.forEach(function (acc) {
+      var st = accountStats(acc);
+      if (st.worstDay < 0 && (worstAccountDay === null || st.worstDay < worstAccountDay.worstDay)) {
+        worstAccountDay = { firm: acc.firm, worstDay: st.worstDay, date: st.worstDayDate };
+      }
+    });
+    return '<div class="panel" style="border-color:var(--accent-dim); background:linear-gradient(160deg, var(--accent-dim), transparent 65%);">' +
+      '<div class="panel-title" style="color:var(--accent-2);">Fleet Summary — every account + personal, combined</div>' +
+      '<div class="stat-grid" style="margin-bottom:0;">' +
+      stat('Aggregate Net P&L', fmtMoney(allNet), allNet >= 0 ? 'gain' : 'loss', accts.length + ' account' + (accts.length === 1 ? '' : 's') + ' + personal') +
+      stat('Cumulative R', cumR == null ? '—' : fmtR(cumR), cumR == null ? '' : (cumR >= 0 ? 'gain' : 'loss'), 'sum of realized R-multiples') +
+      stat('Risk Logged Today', fmtMoney(openRiskToday), '', 'sum of Planned Risk on today\'s trades') +
+      stat('Untagged / Personal', String(untaggedTrades.length) + ' trades', '', 'not assigned to any account') +
+      (worstAccountDay ? stat('Worst Account-Day', fmtMoney(worstAccountDay.worstDay), 'loss', esc(worstAccountDay.firm) + ' · ' + fmtDate(worstAccountDay.date)) : '') +
+      '</div></div>';
+  }
+
+  function payoutRoadmap(acc, st) {
+    if (acc.status !== 'funded' && acc.status !== 'passed') return '';
+    var rows = [];
+    if (st.ddBuffer != null) rows.push(['Buffer above ' + st.ddType + ' drawdown', fmtMoney(st.ddBuffer), st.ddBuffer <= 0 ? 'var(--loss)' : (st.ddPct >= 75 ? 'var(--warn)' : 'var(--gain)')]);
+    if (st.minDays > 0) rows.push(['Trading days', st.tradingDays + ' / ' + st.minDays, st.daysBuffer > 0 ? 'var(--warn)' : 'var(--gain)']);
+    if (st.payoutEstimate != null) rows.push(['Est. payout at ' + acc.profitSplit + '% split', fmtMoney(st.payoutEstimate), 'var(--gain)']);
+    if (acc.nextPayoutDate) {
+      var days = Math.ceil((new Date(acc.nextPayoutDate + 'T00:00:00').getTime() - new Date(todayStr() + 'T00:00:00').getTime()) / 86400000);
+      rows.push(['Next payout window', fmtDate(acc.nextPayoutDate) + (days >= 0 ? ' · ' + days + 'd' : ' · passed'), days <= 3 && days >= 0 ? 'var(--gain)' : 'var(--text)']);
+    }
+    if (acc.payoutSchedule) rows.push(['Schedule', acc.payoutSchedule, 'var(--text)']);
+    if (!rows.length) return '';
+    return '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft);">' +
+      '<div style="font-family:var(--font-mono); font-size:9.5px; letter-spacing:0.08em; color:var(--text-faint); text-transform:uppercase; margin-bottom:6px;">Payout &amp; Milestone Roadmap</div>' +
+      rows.map(function (r) { return '<div class="kv"><span>' + esc(r[0]) + '</span><b style="color:' + r[2] + '">' + r[1] + '</b></div>'; }).join('') +
+      '</div>';
+  }
+
+  function copyTradeDriftTable(accts) {
+    var slaves = accts.filter(function (a) { return a.role === 'slave'; });
+    if (!slaves.length) return '';
+    var rows = slaves.map(function (acc) {
+      var trades = active(state.trades).filter(function (t) { return t.accountId === acc.id; });
+      var drifts = trades.map(driftForTrade).filter(function (d) { return d && (d.priceDrift != null || d.latency != null); });
+      if (!drifts.length) return null;
+      var priceOnes = drifts.filter(function (d) { return d.priceDrift != null; });
+      var latOnes = drifts.filter(function (d) { return d.latency != null; });
+      var avgPrice = priceOnes.length ? priceOnes.reduce(function (a, d) { return a + d.priceDrift; }, 0) / priceOnes.length : null;
+      var avgLat = latOnes.length ? latOnes.reduce(function (a, d) { return a + d.latency; }, 0) / latOnes.length : null;
+      var parent = accts.filter(function (p) { return p.id === acc.linkedParentId; })[0];
+      return '<div class="kv"><span>' + esc(acc.firm) + (acc.nickname ? ' · ' + esc(acc.nickname) : '') + (parent ? ' (from ' + esc(parent.firm) + ')' : '') + '</span>' +
+        '<b>' + (avgPrice == null ? '—' : (avgPrice >= 0 ? '+' : '') + avgPrice.toFixed(3)) + ' avg drift · ' +
+        (avgLat == null ? '—' : avgLat.toFixed(1) + 'm') + ' avg latency · ' + drifts.length + ' trades</b></div>';
+    }).filter(Boolean);
+    if (!rows.length) return '';
+    return '<div class="panel"><div class="panel-title">Copy-Trade Drift Monitor</div>' + rows.join('') +
+      '<div style="margin-top:10px; font-size:10.5px; color:var(--text-faint); line-height:1.5;">Manual entry — log the parent account\'s fill price/time on trades tagged to a slave account (in the trade form) to populate this.</div></div>';
+  }
+
+  function accountsTable(accts) {
+    var today = todayStr();
+    var rows = accts.map(function (acc) {
+      var st = accountStats(acc);
+      var balance = (Number(acc.size) || 0) + st.net;
+      var todayNet = st.byDay[today] || 0;
+      var statusBadge = acc.status === 'passed' ? '<span class="badge ok">passed</span>'
+        : acc.status === 'failed' ? '<span class="badge bad">failed</span>'
+          : acc.status === 'funded' ? '<span class="badge ok">funded</span>'
+            : '<span class="badge neutral">active</span>';
+      return { acc: acc, st: st, balance: balance, todayNet: todayNet, statusBadge: statusBadge };
+    }).sort(function (a, b) { return b.balance - a.balance; });
+    var combinedBalance = rows.reduce(function (s, r) { return s + r.balance; }, 0);
+    var combinedToday = rows.reduce(function (s, r) { return s + r.todayNet; }, 0);
+    var body = rows.map(function (r) {
+      var acc = r.acc, st = r.st;
+      return '<tr class="trade-row" onclick="App.openAccountModal(\'' + acc.id + '\')">' +
+        '<td style="font-weight:600;">' + esc(acc.firm) + (acc.nickname ? '<div style="font-size:10.5px; color:var(--text-faint); font-weight:400;">' + esc(acc.nickname) + '</div>' : '') + '</td>' +
+        '<td>' + r.statusBadge + (acc.role && acc.role !== 'independent' ? ' <span class="badge neutral">' + acc.role + '</span>' : '') + '</td>' +
+        '<td class="pnl-cell">' + fmtMoney(r.balance) + '</td>' +
+        '<td class="pnl-cell ' + (r.todayNet > 0 ? 'gain' : r.todayNet < 0 ? 'loss' : '') + '">' + (r.todayNet ? fmtMoney(r.todayNet) : '—') + '</td>' +
+        '<td class="pnl-cell ' + (st.net > 0 ? 'gain' : st.net < 0 ? 'loss' : '') + '">' + fmtMoney(st.net) + '</td>' +
+        '<td>' + (st.ddBuffer == null ? '—' : fmtMoney(st.ddBuffer)) + '</td>' +
+        '<td>' + st.count + '</td>' +
+        '<td><button class="row-del" onclick="event.stopPropagation(); App.deleteAccount(\'' + acc.id + '\')" title="Delete">✕</button></td>' +
+        '</tr>';
+    }).join('');
+    return '<div class="panel" style="padding:0; overflow:hidden;">' +
+      '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:16px 20px 4px;">' +
+      '<div class="panel-title" style="margin-bottom:0;">Accounts</div>' +
+      '<div style="font-size:12px; color:var(--text-dim); font-family:var(--font-mono);">' + rows.length + ' account' + (rows.length === 1 ? '' : 's') + ' · combined balance <b style="color:var(--text);">' + fmtMoney(combinedBalance) + '</b>' +
+      (combinedToday ? ' · today <b style="color:' + (combinedToday > 0 ? 'var(--gain)' : 'var(--loss)') + ';">' + fmtMoney(combinedToday) + '</b>' : '') + '</div>' +
+      '</div>' +
+      '<div style="overflow-x:auto; padding:8px 20px 18px;"><table class="trade-table"><thead><tr>' +
+      '<th>Account</th><th>Status</th><th>Balance</th><th>Today</th><th>Net P&amp;L</th><th>DD Buffer</th><th>Trades</th><th></th>' +
+      '</tr></thead><tbody>' + body + '</tbody></table></div>' +
+      '</div>';
   }
 
   function renderProps(main) {
@@ -1487,14 +1870,14 @@
     var payouts = accts.reduce(function (s, a) { return s + (Number(a.payouts) || 0); }, 0);
     var trueNet = payouts - spend;
     var roi = spend > 0 ? (trueNet / spend * 100) : null;
-    var head = '<div class="page-head"><div><div class="page-title">Prop Firms</div><div class="page-sub">Rules, drawdown, and what you\'ve actually netted</div></div>' +
+    var head = '<div class="page-head"><div><div class="page-title">Prop Firms &amp; Accounts</div><div class="page-sub">Fleet-wide P&amp;L, rules, drawdown, and what you\'ve actually netted</div></div>' +
       '<button class="btn-primary" style="width:auto;" onclick="App.openAccountModal()">+ Add Account</button></div>';
 
     if (!accts.length) {
       main.innerHTML = head +
         '<div class="panel"><div class="empty-state">' +
         '<div class="em-title">No prop accounts tracked</div>' +
-        '<div class="em-sub">Add an evaluation or funded account with its rules — profit target, daily loss limit, trailing drawdown — and every trade you tag to it updates the meters live. Log eval and reset fees too, so you can see real net ROI rather than just trading P&L.</div>' +
+        '<div class="em-sub">Add an evaluation or funded account with its rules — profit target, daily loss limit, trailing or static drawdown, payout split — and every trade you tag to it updates the meters live. Log eval and reset fees too, so you can see real net ROI rather than just trading P&L.</div>' +
         '<button class="btn-primary" style="width:auto;" onclick="App.openAccountModal()">+ Add your first account</button>' +
         '</div></div>';
       return;
@@ -1512,16 +1895,17 @@
         : acc.status === 'failed' ? '<span class="badge bad">failed</span>'
           : acc.status === 'funded' ? '<span class="badge ok">funded</span>'
             : '<span class="badge neutral">active</span>';
+      var roleBadge = acc.role === 'parent' ? '<span class="badge neutral">parent</span>' : acc.role === 'slave' ? '<span class="badge neutral">slave</span>' : '';
       var alerts = '';
       if (st.ddBreached) alerts += '<div style="background:var(--loss-dim); color:var(--loss); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">Drawdown limit exceeded — this account would be breached.</div>';
-      else if (st.ddPct !== null && st.ddPct >= 75) alerts += '<div style="background:var(--warn-dim); color:var(--warn); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">' + Math.round(st.ddPct) + '% of your drawdown is used. Size down.</div>';
+      else if (st.ddPct !== null && st.ddPct >= 75) alerts += '<div style="background:var(--warn-dim); color:var(--warn); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">' + Math.round(st.ddPct) + '% of your ' + st.ddType + ' drawdown is used. Size down.</div>';
       if (st.dailyBreached) alerts += '<div style="background:var(--loss-dim); color:var(--loss); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">A single day (' + fmtDate(st.worstDayDate) + ', ' + fmtMoney(st.worstDay) + ') broke your daily loss limit.</div>';
       if (st.passed) alerts += '<div style="background:var(--gain-dim); color:var(--gain); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">Profit target reached.</div>';
       var targetBar = st.targetPct === null ? '' :
         '<div class="kv"><span>Profit target</span><b>' + fmtMoney(st.net) + ' / ' + fmtMoney(acc.profitTarget) + '</b></div>' +
         '<div class="meter"><div style="width:' + st.targetPct + '%; background:var(--gain);"></div></div>';
       var ddBar = st.ddPct === null ? '' :
-        '<div class="kv"><span>Drawdown used</span><b style="color:' + (st.ddPct >= 75 ? 'var(--loss)' : 'var(--text)') + '">' + fmtMoney(st.trailingUsed) + ' / ' + fmtMoney(acc.maxDrawdown) + '</b></div>' +
+        '<div class="kv"><span>Drawdown used (' + st.ddType + ')</span><b style="color:' + (st.ddPct >= 75 ? 'var(--loss)' : 'var(--text)') + '">' + fmtMoney(st.ddUsed) + ' / ' + fmtMoney(acc.maxDrawdown) + '</b></div>' +
         '<div class="meter"><div style="width:' + st.ddPct + '%; background:' + (st.ddPct >= 75 ? 'var(--loss)' : 'var(--warn)') + ';"></div></div>';
       var dailyRow = !acc.dailyLoss ? '' :
         '<div class="kv"><span>Worst day vs limit</span><b style="color:' + (st.dailyBreached ? 'var(--loss)' : 'var(--text)') + '">' + fmtMoney(st.worstDay) + ' / -' + fmtMoney(acc.dailyLoss).replace('$', '$') + '</b></div>';
@@ -1529,7 +1913,7 @@
         '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px;">' +
         '<div><div style="font-size:15px; font-weight:700;">' + esc(acc.firm) + '</div>' +
         '<div style="font-size:12px; color:var(--text-dim); margin-top:3px;">' + esc(acc.nickname || '') + (acc.size ? ' · ' + fmtMoney(acc.size) + ' account' : '') + '</div></div>' +
-        '<div style="display:flex; gap:8px; align-items:center;">' + statusBadge +
+        '<div style="display:flex; gap:8px; align-items:center;">' + statusBadge + roleBadge +
         '<button class="row-del" onclick="App.deleteAccount(\'' + acc.id + '\')" title="Delete">✕</button>' +
         '<button class="row-del" onclick="App.openAccountModal(\'' + acc.id + '\')" title="Edit">✎</button></div>' +
         '</div>' +
@@ -1537,10 +1921,13 @@
         '<div class="kv" style="border-top:1px solid var(--line-soft); margin-top:8px; padding-top:10px;"><span>Trades on this account</span><b>' + st.count + '</b></div>' +
         '<div class="kv"><span>Fees paid</span><b style="color:var(--loss)">' + fmtMoney(acc.feesPaid || 0) + '</b></div>' +
         '<div class="kv"><span>Payouts</span><b style="color:var(--gain)">' + fmtMoney(acc.payouts || 0) + '</b></div>' +
+        payoutRoadmap(acc, st) +
         '</div>';
     }).join('');
-    main.innerHTML = head + finance +
-      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:18px;">' + cards + '</div>' +
+    main.innerHTML = head + accountsTable(accts) + fleetSummary(accts) + finance +
+      '<div style="font-family:var(--font-mono); font-size:11px; letter-spacing:0.08em; color:var(--text-faint); text-transform:uppercase; margin:4px 0 12px;">Account detail — rules, drawdown &amp; payout roadmap</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:18px; margin-bottom:18px;">' + cards + '</div>' +
+      copyTradeDriftTable(accts) +
       '<div class="panel" style="border-color:var(--line-soft);"><div style="font-size:11.5px; color:var(--text-faint); line-height:1.6;">' +
       'Meters update from trades you assign to each account in the trade form. Fees and payouts are entered by hand — this journal can\'t connect to your bank or your firm\'s dashboard, so there\'s no automatic transaction import here.' +
       '</div></div>';
@@ -1549,7 +1936,11 @@
   function openAccountModal(accId) {
     var acc = accId ? active(state.accounts).filter(function (a) { return a.id === accId; })[0] : null;
     var isEdit = !!acc;
-    var a = acc || { id: 'acc_' + Date.now().toString(36), firm: '', nickname: '', size: '', profitTarget: '', maxDrawdown: '', dailyLoss: '', feesPaid: '', payouts: '', status: 'active' };
+    var a = acc || {
+      id: 'acc_' + Date.now().toString(36), firm: '', nickname: '', size: '', profitTarget: '', maxDrawdown: '', dailyLoss: '', feesPaid: '', payouts: '', status: 'active',
+      ddType: 'trailing', profitSplit: '', payoutSchedule: '', nextPayoutDate: '', minTradingDays: '', role: 'independent', linkedParentId: ''
+    };
+    var parentOptions = active(state.accounts).filter(function (x) { return x.role === 'parent' && x.id !== a.id; });
     var root = $('#modalRoot');
     root.innerHTML =
       '<div class="modal-overlay" id="modalOverlay"><div class="modal">' +
@@ -1561,10 +1952,17 @@
       '<div class="form-field"><label>Account Size ($)</label><input id="a_size" type="number" step="any" value="' + esc(a.size) + '" placeholder="50000"></div>' +
       selectField('Status', 'a_status_sel', [{ v: 'active', l: 'Active' }, { v: 'passed', l: 'Passed' }, { v: 'funded', l: 'Funded' }, { v: 'failed', l: 'Failed' }], a.status).replace('f_a_status_sel', 'a_status') +
       '<div class="form-field"><label>Profit Target ($)</label><input id="a_profitTarget" type="number" step="any" value="' + esc(a.profitTarget) + '" placeholder="3000"></div>' +
-      '<div class="form-field"><label>Max / Trailing Drawdown ($)</label><input id="a_maxDrawdown" type="number" step="any" value="' + esc(a.maxDrawdown) + '" placeholder="2500"></div>' +
+      '<div class="form-field"><label>Max Drawdown ($)</label><input id="a_maxDrawdown" type="number" step="any" value="' + esc(a.maxDrawdown) + '" placeholder="2500"></div>' +
+      selectField('Drawdown Type', 'a_ddType_sel', [{ v: 'trailing', l: 'Trailing (peak-to-trough)' }, { v: 'static', l: 'Static (vs starting balance)' }], a.ddType || 'trailing').replace('f_a_ddType_sel', 'a_ddType') +
       '<div class="form-field"><label>Daily Loss Limit ($)</label><input id="a_dailyLoss" type="number" step="any" value="' + esc(a.dailyLoss) + '" placeholder="1000"></div>' +
       '<div class="form-field"><label>Fees Paid ($)</label><input id="a_feesPaid" type="number" step="any" value="' + esc(a.feesPaid) + '" placeholder="evals + resets"></div>' +
       '<div class="form-field"><label>Payouts Received ($)</label><input id="a_payouts" type="number" step="any" value="' + esc(a.payouts) + '"></div>' +
+      '<div class="form-field"><label>Profit Split (%)</label><input id="a_profitSplit" type="number" step="any" value="' + esc(a.profitSplit) + '" placeholder="80"></div>' +
+      selectField('Payout Schedule', 'a_paySched_sel', [{ v: '', l: '— not set —' }, { v: 'weekly', l: 'Weekly' }, { v: 'biweekly', l: 'Biweekly' }, { v: 'monthly', l: 'Monthly' }, { v: 'on-demand', l: 'On-demand' }], a.payoutSchedule || '').replace('f_a_paySched_sel', 'a_payoutSchedule') +
+      '<div class="form-field"><label>Next Payout Date</label><input id="a_nextPayoutDate" type="date" value="' + esc(a.nextPayoutDate) + '"></div>' +
+      '<div class="form-field"><label>Min Trading Days Required</label><input id="a_minTradingDays" type="number" step="1" value="' + esc(a.minTradingDays) + '" placeholder="e.g. 10"></div>' +
+      selectField('Copy-Trade Role', 'a_role_sel', [{ v: 'independent', l: 'Independent' }, { v: 'parent', l: 'Parent (source)' }, { v: 'slave', l: 'Slave (copies a parent)' }], a.role || 'independent').replace('f_a_role_sel', 'a_role') +
+      selectField('Linked Parent (if slave)', 'a_linkedParentId_sel', [{ v: '', l: '— none —' }].concat(parentOptions.map(function (p) { return { v: p.id, l: p.firm + (p.nickname ? ' · ' + p.nickname : '') }; })), a.linkedParentId || '').replace('f_a_linkedParentId_sel', 'a_linkedParentId') +
       '</div>' +
       '<div class="modal-actions">' +
       '<button type="submit" class="btn-primary" style="width:auto; flex:1;">' + (isEdit ? 'Save Changes' : 'Add Account') + '</button>' +
@@ -1584,6 +1982,9 @@
         id: a.id, firm: $('#a_firm').value.trim(), nickname: $('#a_nickname').value.trim(), size: $('#a_size').value,
         profitTarget: $('#a_profitTarget').value, maxDrawdown: $('#a_maxDrawdown').value, dailyLoss: $('#a_dailyLoss').value,
         feesPaid: $('#a_feesPaid').value, payouts: $('#a_payouts').value, status: $('#a_status').value,
+        ddType: $('#a_ddType').value, profitSplit: $('#a_profitSplit').value, payoutSchedule: $('#a_payoutSchedule').value,
+        nextPayoutDate: $('#a_nextPayoutDate').value, minTradingDays: $('#a_minTradingDays').value,
+        role: $('#a_role').value, linkedParentId: $('#a_role').value === 'slave' ? $('#a_linkedParentId').value : '',
         updatedAt: Date.now(), deleted: false
       };
       if (!obj.firm) { toast('Firm name is required', true); return; }
@@ -1609,8 +2010,123 @@
   }
 
   // ==========================================================================
+  // Watchlist — symbols + a volume profile built from YOUR OWN logged trades
+  // (not live market data — this app has no market-data feed or backend).
+  // ==========================================================================
+  function volumeProfileBars(profile) {
+    if (!profile.buckets.length) return '<div style="color:var(--text-faint); font-size:12px;">No priced trades logged on this symbol yet.</div>';
+    var maxSize = Math.max.apply(null, profile.buckets.map(function (b) { return b.size; }).concat([1]));
+    var rows = profile.buckets.slice().reverse().map(function (b) {
+      var pctW = b.size ? Math.max(4, Math.round(b.size / maxSize * 100)) : 0;
+      var cls = b.pnl > 0 ? 'gain' : (b.pnl < 0 ? 'loss' : '');
+      var mid = (b.lo + b.hi) / 2;
+      return '<div style="display:flex; align-items:center; gap:8px; padding:2px 0;">' +
+        '<div style="width:64px; flex-shrink:0; font-family:var(--font-mono); font-size:10px; color:var(--text-faint); text-align:right;">' + mid.toFixed(2) + '</div>' +
+        '<div style="flex:1; min-width:40px;"><div class="meter" style="margin:0;"><div style="width:' + pctW + '%; background:var(--' + (cls || 'accent') + ');"></div></div></div>' +
+        '<div style="width:34px; flex-shrink:0; font-family:var(--font-mono); font-size:10px; color:var(--text-faint);">' + (b.size || '') + '</div>' +
+        '</div>';
+    }).join('');
+    return rows + '<div style="margin-top:8px; font-size:10px; color:var(--text-faint);">Volume-at-price from your own fills — green/red = that zone\'s net P&amp;L, bar width = size traded there. Not live market data.</div>';
+  }
+
+  function renderWatchlist(main) {
+    var list = active(state.watchlist);
+    var head = '<div class="page-head"><div><div class="page-title">Watchlist</div><div class="page-sub">Symbols you track, with a volume profile built from your own trade history</div></div></div>' +
+      '<div class="panel" style="margin-bottom:18px;"><div style="display:flex; gap:10px;">' +
+      '<input id="wlSymbolInput" class="search-input" placeholder="Add a symbol (e.g. ES, AAPL, BTCUSD)" style="text-transform:uppercase;">' +
+      '<button class="btn-primary" style="width:auto;" id="wlAddBtn">+ Add</button>' +
+      '</div></div>';
+    if (!list.length) {
+      main.innerHTML = head + '<div class="panel"><div class="empty-state"><div class="em-title">No symbols tracked yet</div>' +
+        '<div class="em-sub">Add a symbol above. Trades you\'ve logged against it build a volume profile automatically — no market-data connection needed.</div></div></div>';
+    } else {
+      var cards = list.map(function (w) {
+        var profile = volumeProfileForSymbol(w.symbol);
+        var trades = profile.trades;
+        var net = trades.reduce(function (s, t) { return s + (Number(t.pnl) || 0); }, 0);
+        var wins = trades.filter(function (t) { return Number(t.pnl) > 0; }).length;
+        var wr = trades.length ? Math.round(wins / trades.length * 100) : 0;
+        var last = trades.slice().sort(function (a, b) { return (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')); }).pop();
+        var lastPrice = last && last.exit !== '' && last.exit != null ? last.exit : (last ? last.entry : null);
+        return '<div class="panel">' +
+          '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">' +
+          '<div><div style="font-size:16px; font-weight:700; font-family:var(--font-mono);">' + esc(w.symbol) + '</div>' +
+          '<div style="font-size:11px; color:var(--text-faint); margin-top:2px;">' + trades.length + ' trades logged' + (wr ? ' · ' + wr + '% win rate' : '') + '</div></div>' +
+          '<button class="row-del" onclick="App.removeWatchlistSymbol(\'' + w.id + '\')" title="Remove">✕</button>' +
+          '</div>' +
+          '<div class="stat-grid" style="grid-template-columns:repeat(3,1fr); margin-bottom:12px;">' +
+          stat('Net P&L', fmtMoney(net), net >= 0 ? 'gain' : 'loss') +
+          stat('Last Logged Price', lastPrice == null ? '—' : String(lastPrice), '', 'your last fill, not a live quote') +
+          stat('Win Rate', trades.length ? wr + '%' : '—') +
+          '</div>' +
+          '<div style="font-family:var(--font-mono); font-size:9.5px; letter-spacing:0.08em; color:var(--text-faint); text-transform:uppercase; margin-bottom:8px;">Volume Profile (your fills)</div>' +
+          volumeProfileBars(profile) +
+          (w.notes ? '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft); font-size:12px; color:var(--text-dim);">' + esc(w.notes) + '</div>' : '') +
+          '</div>';
+      }).join('');
+      main.innerHTML = head + '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:18px;">' + cards + '</div>';
+    }
+    $('#wlAddBtn').addEventListener('click', addWatchlistSymbol);
+    $('#wlSymbolInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addWatchlistSymbol(); } });
+  }
+
+  function addWatchlistSymbol() {
+    var input = $('#wlSymbolInput');
+    var sym = (input.value || '').toUpperCase().trim();
+    if (!sym) return;
+    if (active(state.watchlist).some(function (w) { return w.symbol === sym; })) { toast('Already on your watchlist'); return; }
+    state.watchlist.push({ id: 'wl_' + Date.now().toString(36), symbol: sym, notes: '', addedAt: Date.now(), updatedAt: Date.now(), deleted: false });
+    persistLocal();
+    scheduleDriveSync();
+    input.value = '';
+    toast('Added ' + sym + ' to watchlist');
+    render();
+  }
+
+  function removeWatchlistSymbol(id) {
+    var w = state.watchlist.find(function (x) { return x.id === id; });
+    if (!w) return;
+    w.deleted = true; w.deletedAt = Date.now(); w.updatedAt = Date.now();
+    persistLocal();
+    scheduleDriveSync();
+    toast('Removed from watchlist');
+    render();
+  }
+
+  // ==========================================================================
   // AI Coach — local rule-based pattern engine (no network calls, ever)
   // ==========================================================================
+  function ruleAdherencePanel(trades) {
+    var rules = (state.settings && state.settings.tradingRules) || {};
+    var hasRules = rules.maxSize || (rules.noTradeStart && rules.noTradeEnd) || rules.requireStop || (rules.forbiddenMistakes && rules.forbiddenMistakes.length);
+    var report = ruleAdherenceReport(trades, rules);
+    if (!report) return '';
+    var gradeCls = report.overallGrade === 'A' || report.overallGrade === 'B' ? 'gain' : (report.overallGrade === 'C' ? 'warn' : 'loss');
+    return '<div class="panel"><div class="panel-title">Rule Adherence Report <span style="font-weight:400; font-size:10px; color:var(--text-faint); text-transform:none; letter-spacing:0;">A–F, rule-based, on-device</span></div>' +
+      '<div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; margin-bottom:12px;">' +
+      '<div style="font-family:var(--font-mono); font-size:34px; font-weight:800; color:var(--' + gradeCls + ');">' + report.overallGrade + '</div>' +
+      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6;">Average score ' + report.avg.toFixed(0) + '/100 across ' + report.n + ' graded trades.' +
+      (hasRules ? '' : ' You haven\'t set any Trading Rules yet — go to Settings → Trading Rules to define what "following your plan" means, and grading gets sharper.') + '</div>' +
+      '</div>' +
+      (report.topReasons.length ? '<div style="font-family:var(--font-mono); font-size:9.5px; letter-spacing:0.08em; color:var(--text-faint); text-transform:uppercase; margin-bottom:6px;">Most common violations</div>' +
+        report.topReasons.map(function (r) { return '<div class="kv"><span>' + esc(r.reason) + '</span><b>' + r.n + '×</b></div>'; }).join('') : '<div style="font-size:12px; color:var(--gain);">No rule violations detected in your logged trades.</div>') +
+      '</div>';
+  }
+
+  function aiAuditorPanel() {
+    var hasKey = !!getAiApiKey();
+    var status = state.aiAudit.status;
+    return '<div class="panel">' +
+      '<div class="panel-title">AI Session Auditor <span style="font-weight:400; font-size:10px; color:var(--warn); text-transform:none; letter-spacing:0;">beta · opt-in · your own API key</span></div>' +
+      '<div style="font-size:12px; color:var(--text-dim); line-height:1.6; margin-bottom:12px;">Sends a summary of your recent trades plus your written trading plan directly from this browser to Claude, using your own Anthropic API key. Nothing goes through any RAVE server — there isn\'t one. Set your key and (optionally) your trading plan in Settings first.</div>' +
+      (!hasKey
+        ? '<div style="font-size:12px; color:var(--text-faint);">No Anthropic API key set. Add one in Settings → AI Session Auditor to enable this.</div>'
+        : '<button class="btn-primary" style="width:auto;" id="runAiAuditBtn"' + (status === 'loading' ? ' disabled' : '') + '>' + (status === 'loading' ? 'Auditing…' : 'Run AI Audit') + '</button>') +
+      (status === 'error' ? '<div style="margin-top:12px; padding:10px 12px; background:var(--loss-dim); border-radius:8px; font-size:12px; color:var(--loss); line-height:1.5;">' + esc(state.aiAudit.error) + '</div>' : '') +
+      (status === 'done' ? '<div style="margin-top:14px; padding:14px; background:var(--surface-2); border-radius:10px; font-size:13px; line-height:1.65; white-space:pre-wrap;">' + esc(state.aiAudit.text) + '</div>' : '') +
+      '</div>';
+  }
+
   function renderCoach(main) {
     var trades = active(state.trades);
     var insights = window.CoachEngine ? window.CoachEngine.buildInsights(trades) : [];
@@ -1622,6 +2138,8 @@
       '<div class="panel-title" style="color:var(--accent-2);">This week\'s read</div>' +
       '<div style="font-size:13.5px; line-height:1.65; color:var(--text-dim);">' + esc(read) + '</div>' +
       '</div>' +
+      ruleAdherencePanel(trades) +
+      aiAuditorPanel() +
       (insights.length ? '<div class="panel"><div class="panel-title">Detected patterns</div>' +
         insights.slice(0, 8).map(function (ins) {
           return '<div style="padding:12px 0; border-bottom:1px solid var(--line-soft);">' +
@@ -1647,6 +2165,8 @@
       '</div>';
 
     renderCoachLog();
+    var auditBtn = $('#runAiAuditBtn');
+    if (auditBtn) auditBtn.addEventListener('click', runAiAudit);
     $all('.coach-suggest-btn').forEach(function (btn) {
       btn.addEventListener('click', function () { askCoach(btn.dataset.q, trades, insights); });
     });
@@ -1681,12 +2201,62 @@
     log.scrollTop = log.scrollHeight;
   }
 
+  // ---- AI Session Auditor (beta): calls Anthropic directly from the browser
+  // using the user's own API key. No RAVE server is involved — there isn't
+  // one. See RAVE_PRO_SPEC.md section 4 for the full design + caveats.
+  async function runAiAudit() {
+    var key = getAiApiKey();
+    if (!key) { toast('Set your Anthropic API key in Settings first', true); return; }
+    var recent = active(state.trades).slice().sort(function (a, b) { return (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')); }).slice(0, 20);
+    if (!recent.length) { toast('Log a few trades first', true); return; }
+    var plan = (state.settings && state.settings.tradingPlan) || '';
+    var summary = recent.map(function (t) {
+      return t.date + ' ' + (t.time || '') + ' ' + t.symbol + ' ' + t.direction + ' size=' + t.size + ' entry=' + t.entry + ' exit=' + t.exit +
+        ' pnl=' + t.pnl + (t.plannedRisk ? ' plannedRisk=' + t.plannedRisk : '') + (t.mistakes && t.mistakes.length ? ' mistakes=' + t.mistakes.join('/') : '') +
+        (t.rulesFollowed === false ? ' [marked: did not follow plan]' : '') + (t.notes ? ' notes="' + t.notes.slice(0, 200) + '"' : '');
+    }).join('\n');
+    var prompt = 'You are a trading performance auditor reviewing a trader\'s own logged trades against their own written trading plan. ' +
+      'Grade their overall rule adherence A-F, call out the 2-3 clearest recurring leaks (timing, sizing, emotional tags, setups), and give one concrete, specific thing to change next session. Be direct and concise (under 300 words). This is not financial advice and should not discuss market direction — it is about the trader\'s own process discipline.\n\n' +
+      'TRADING PLAN (may be blank if none provided):\n' + (plan || '(no written plan provided)') + '\n\n' +
+      'RECENT TRADES (most recent first):\n' + summary;
+
+    state.aiAudit = { status: 'loading', text: '', error: '' };
+    render();
+    try {
+      var res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: 'claude-3-5-haiku-20241022',
+          max_tokens: 700,
+          messages: [{ role: 'user', content: prompt }]
+        })
+      });
+      var data = await res.json();
+      if (!res.ok) {
+        throw new Error((data && data.error && data.error.message) ? data.error.message : ('HTTP ' + res.status));
+      }
+      var text = (data.content && data.content[0] && data.content[0].text) || '(empty response)';
+      state.aiAudit = { status: 'done', text: text, error: '' };
+    } catch (e) {
+      state.aiAudit = { status: 'error', text: '', error: 'Audit failed: ' + (e && e.message ? e.message : 'unknown error') + ' — this can happen if the key is invalid, the browser blocks the direct request, or you\'re offline.' };
+    }
+    render();
+  }
+
   // ==========================================================================
   // Settings
   // ==========================================================================
   function renderSettings(main) {
     var st = window.DriveSync ? window.DriveSync.getStatus() : { state: 'unsupported' };
     var clientId = window.DriveSync ? window.DriveSync.getClientId() : '';
+    var gr = defaultGuardrails();
+    var rules = (state.settings && state.settings.tradingRules) || {};
     var pillCls = st.state === 'connected' ? 'on' : (st.state === 'connecting' ? 'busy' : (st.state === 'error' ? 'err' : ''));
     var pillText = st.state === 'connected' ? 'Connected' + (st.email ? ' · ' + st.email : '') : st.state === 'connecting' ? 'Connecting…' : st.state === 'error' ? 'Error' : 'Not connected';
 
@@ -1709,9 +2279,45 @@
 
       '<div class="panel">' +
       '<div class="panel-title">Drawdown guard</div>' +
-      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">Set a daily max-loss and the Command Center HUD will track today\'s loss against it live, turning amber then red as you approach the limit.</div>' +
+      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">Set a daily max-loss and the Dashboard HUD will track today\'s loss against it live, turning amber then red as you approach the limit.</div>' +
       '<div class="form-field" style="max-width:260px;"><label>Daily loss limit ($)</label><input id="dailyLossLimit" type="number" step="any" value="' + esc(state.settings.dailyLossLimit || '') + '" placeholder="e.g. 500"></div>' +
       '<button class="btn-primary" style="width:auto; margin-top:8px;" id="saveDailyLimitBtn">Save limit</button>' +
+      '</div>' +
+
+      '<div class="panel">' +
+      '<div class="panel-title">Risk Guardrails <span style="font-weight:400; font-size:10px; color:var(--text-faint); text-transform:none; letter-spacing:0;">soft circuit breakers, checked whenever you log a trade</span></div>' +
+      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">RAVE can\'t block your broker, but it can flag the pattern the moment it shows up in today\'s log — 2+ max losses in a short window, over-frequent execution, or slippage past a threshold.</div>' +
+      '<div class="form-grid">' +
+      '<div class="form-field"><label>Max consecutive losses</label><input id="rg_maxConsecLosses" type="number" step="1" value="' + esc(gr.maxConsecLosses) + '"></div>' +
+      '<div class="form-field"><label>...within this many minutes</label><input id="rg_maxConsecLossWindow" type="number" step="1" value="' + esc(gr.maxConsecLossWindow) + '"></div>' +
+      '<div class="form-field"><label>Over-frequency trade count</label><input id="rg_overfreqCount" type="number" step="1" value="' + esc(gr.overfreqCount) + '"></div>' +
+      '<div class="form-field"><label>...within this many minutes</label><input id="rg_overfreqWindow" type="number" step="1" value="' + esc(gr.overfreqWindow) + '"></div>' +
+      '<div class="form-field"><label>Slippage alert threshold ($, optional)</label><input id="rg_slippageThreshold" type="number" step="any" value="' + esc(gr.slippageThreshold == null ? '' : gr.slippageThreshold) + '" placeholder="e.g. 2"></div>' +
+      '</div>' +
+      '<button class="btn-primary" style="width:auto; margin-top:8px;" id="saveGuardrailsBtn">Save guardrails</button>' +
+      '</div>' +
+
+      '<div class="panel">' +
+      '<div class="panel-title">Trading Rules <span style="font-weight:400; font-size:10px; color:var(--text-faint); text-transform:none; letter-spacing:0;">drives the A–F Rule Adherence grade in Coach</span></div>' +
+      '<div class="form-grid">' +
+      '<div class="form-field"><label>Max position size</label><input id="tr_maxSize" type="number" step="any" value="' + esc(rules.maxSize || '') + '" placeholder="optional"></div>' +
+      '<div class="form-field"><label>No-trade window start</label><input id="tr_noTradeStart" type="time" value="' + esc(rules.noTradeStart || '') + '"></div>' +
+      '<div class="form-field"><label>No-trade window end</label><input id="tr_noTradeEnd" type="time" value="' + esc(rules.noTradeEnd || '') + '"></div>' +
+      '</div>' +
+      '<div class="toggle-row" style="margin-bottom:12px;"><input type="checkbox" id="tr_requireStop" ' + (rules.requireStop ? 'checked' : '') + '><label for="tr_requireStop" style="text-transform:none; font-family:inherit; letter-spacing:0; color:var(--text-dim); font-size:12.5px;">Every trade must have a Planned Risk / stop set</label></div>' +
+      '<div class="form-field full-span"><label>Forbidden mistake tags (tap to toggle)</label><div class="pill-row" id="forbiddenChips">' +
+      MISTAKE_TAGS.map(function (m) { return '<button type="button" class="mistake-chip' + ((rules.forbiddenMistakes || []).indexOf(m) > -1 ? ' active' : '') + '" data-m="' + esc(m) + '">' + esc(m) + '</button>'; }).join('') +
+      '</div></div>' +
+      '<button class="btn-primary" style="width:auto; margin-top:8px;" id="saveRulesBtn">Save trading rules</button>' +
+      '</div>' +
+
+      '<div class="panel">' +
+      '<div class="panel-title">AI Session Auditor <span style="font-weight:400; font-size:10px; color:var(--warn); text-transform:none; letter-spacing:0;">beta · opt-in</span></div>' +
+      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">Optional: paste your own Anthropic API key to enable "Run AI Audit" in Coach, which sends your recent trades + trading plan directly from this browser to Claude. The key is stored only in this browser\'s local storage — it is deliberately excluded from Drive sync and JSON export, so it never leaves this device on its own. Get a key at <span style="color:var(--text-dim);">console.anthropic.com</span>.</div>' +
+      '<div class="form-field"><label>Anthropic API Key</label><input id="aiKeyInput" type="password" value="' + esc(getAiApiKey()) + '" placeholder="sk-ant-…" autocomplete="off"></div>' +
+      '<div class="form-field full-span"><label>Your written trading plan (optional, synced like your other settings)</label><textarea id="tradingPlanInput" placeholder="Entry criteria, stop rules, sizing rules, times you don\'t trade…">' + esc((state.settings && state.settings.tradingPlan) || '') + '</textarea></div>' +
+      '<button class="btn-primary" style="width:auto;" id="saveAiKeyBtn">Save</button>' +
+      (getAiApiKey() ? ' <button class="btn-ghost" style="width:auto;" id="clearAiKeyBtn">Remove key</button>' : '') +
       '</div>' +
 
       '<div class="panel">' +
@@ -1733,7 +2339,7 @@
       '</div>' +
 
       '<div class="panel" style="border-color:var(--line-soft);">' +
-      '<div style="font-size:11.5px; color:var(--text-faint); line-height:1.6;">This is your private journal. Nothing here is sent anywhere except, if you choose to connect it, your own Google Drive account. The Coach tab runs entirely on-device — no trade data is ever sent to any AI service.</div>' +
+      '<div style="font-size:11.5px; color:var(--text-faint); line-height:1.6;">This is your private journal. Nothing here is sent anywhere except, if you choose to connect it, your own Google Drive account. Everything in Coach — insights, rule adherence, the chat — runs entirely on-device. The one exception is the optional AI Session Auditor above: only if you paste your own Anthropic API key and click "Run AI Audit" does a summary of your trades get sent, directly from this browser to Anthropic — nothing routes through a RAVE server, because there isn\'t one.</div>' +
       '</div>';
 
     var saveLimitBtn = $('#saveDailyLimitBtn');
@@ -1742,6 +2348,50 @@
       persistLocal();
       scheduleDriveSync();
       toast('Daily loss limit saved');
+      render();
+    });
+    $('#saveGuardrailsBtn').addEventListener('click', function () {
+      state.settings.riskGuardrails = {
+        maxConsecLosses: $('#rg_maxConsecLosses').value, maxConsecLossWindow: $('#rg_maxConsecLossWindow').value,
+        overfreqCount: $('#rg_overfreqCount').value, overfreqWindow: $('#rg_overfreqWindow').value,
+        slippageThreshold: $('#rg_slippageThreshold').value
+      };
+      persistLocal();
+      scheduleDriveSync();
+      toast('Risk guardrails saved');
+      render();
+    });
+    var forbiddenSelected = (rules.forbiddenMistakes || []).slice();
+    $all('#forbiddenChips .mistake-chip').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        var m = chip.dataset.m;
+        var idx = forbiddenSelected.indexOf(m);
+        if (idx > -1) { forbiddenSelected.splice(idx, 1); chip.classList.remove('active'); }
+        else { forbiddenSelected.push(m); chip.classList.add('active'); }
+      });
+    });
+    $('#saveRulesBtn').addEventListener('click', function () {
+      state.settings.tradingRules = {
+        maxSize: $('#tr_maxSize').value, noTradeStart: $('#tr_noTradeStart').value, noTradeEnd: $('#tr_noTradeEnd').value,
+        requireStop: $('#tr_requireStop').checked, forbiddenMistakes: forbiddenSelected.slice()
+      };
+      persistLocal();
+      scheduleDriveSync();
+      toast('Trading rules saved');
+      render();
+    });
+    $('#saveAiKeyBtn').addEventListener('click', function () {
+      setAiApiKey($('#aiKeyInput').value.trim());
+      state.settings.tradingPlan = $('#tradingPlanInput').value;
+      persistLocal();
+      scheduleDriveSync();
+      toast('AI Auditor settings saved (key stays on this device only)');
+      render();
+    });
+    var clearKeyBtn = $('#clearAiKeyBtn');
+    if (clearKeyBtn) clearKeyBtn.addEventListener('click', function () {
+      setAiApiKey('');
+      toast('API key removed from this device');
       render();
     });
     $('#gSaveClientBtn').addEventListener('click', function () {
@@ -1770,8 +2420,9 @@
     });
     $('#wipeBtn').addEventListener('click', function () {
       if (!confirm('Wipe all trades, accounts, and screenshots from THIS DEVICE? This cannot be undone locally. Your Drive copy (if connected) is not touched.')) return;
-      state.trades = []; state.accounts = [];
+      state.trades = []; state.accounts = []; state.watchlist = [];
       persistLocal();
+      setAiApiKey('');
       Object.keys(localStorage).filter(function (k) { return k.indexOf(LS_PREFIX + 'shot:') === 0; }).forEach(function (k) { localStorage.removeItem(k); });
       toast('Local data wiped');
       render();
@@ -1779,7 +2430,7 @@
   }
 
   function exportBackup() {
-    var payload = { version: 1, exportedAt: Date.now(), trades: state.trades, accounts: state.accounts, settings: state.settings };
+    var payload = { version: 1, exportedAt: Date.now(), trades: state.trades, accounts: state.accounts, watchlist: state.watchlist, settings: state.settings };
     var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
@@ -1799,6 +2450,7 @@
         var data = JSON.parse(ev.target.result);
         state.trades = mergeById(state.trades, data.trades || []);
         state.accounts = mergeById(state.accounts, data.accounts || []);
+        state.watchlist = mergeById(state.watchlist, data.watchlist || []);
         if (data.settings) state.settings = Object.assign({}, data.settings, state.settings);
         persistLocal();
         scheduleDriveSync();
@@ -1816,11 +2468,12 @@
   // ==========================================================================
   function paletteActions() {
     return [
-      { label: 'Go to Command Center', kind: 'nav', tab: 'dashboard' },
+      { label: 'Go to Dashboard', kind: 'nav', tab: 'dashboard' },
       { label: 'Go to Trade Log', kind: 'nav', tab: 'log' },
       { label: 'Go to Calendar', kind: 'nav', tab: 'calendar' },
       { label: 'Go to Macro Calendar', kind: 'nav', tab: 'macro' },
-      { label: 'Go to Prop Firms', kind: 'nav', tab: 'props' },
+      { label: 'Go to Watchlist', kind: 'nav', tab: 'watchlist' },
+      { label: 'Go to Prop Firms & Accounts', kind: 'nav', tab: 'props' },
       { label: 'Go to Coach', kind: 'nav', tab: 'coach' },
       { label: 'Go to Settings', kind: 'nav', tab: 'settings' },
       { label: 'New Trade (⌘J)', kind: 'action', run: function () { openTradeModal(); } },
@@ -1902,7 +2555,9 @@
     openTradeModal: openTradeModal,
     importSpreadsheetTrades: importSpreadsheetTrades,
     openAccountModal: openAccountModal,
-    deleteAccount: deleteAccount
+    deleteAccount: deleteAccount,
+    removeWatchlistSymbol: removeWatchlistSymbol,
+    runAiAudit: runAiAudit
   };
 
   window.addEventListener('beforeinstallprompt', function (e) {

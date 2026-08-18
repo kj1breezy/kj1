@@ -1,7 +1,7 @@
 /* Service worker for RAVE — caches the app shell so it opens instantly and
    works offline. Your trade data never passes through here: it lives in
    localStorage and (optionally) your own Google Drive, not in this cache. */
-var CACHE_NAME = 'ledger-shell-v5';
+var CACHE_NAME = 'ledger-shell-v6';
 var SHELL_FILES = [
   './',
   './index.html',
