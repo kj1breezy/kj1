@@ -18,7 +18,7 @@
     calMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     calSelectedDay: null,
     coachThread: [], // {role:'user'|'assistant', text}
-    aiAudit: { status: 'idle', text: '', error: '' }, // 'idle'|'loading'|'done'|'error' — runtime only, never persisted
+    aiChat: { status: 'idle', error: '', thread: [] }, // 'idle'|'loading'|'error' — thread: {role:'user'|'assistant', text} — runtime only, never persisted
     loaded: false,
     deferredInstallPrompt: null
   };
@@ -33,7 +33,7 @@
   ];
 
   // ---- Seed data: your real ES futures trade history, carried over from your prior journal ----
-  var IMPORTED_TRADES = [{"id":"imp_20260102_0","date":"2026-01-02","time":"","symbol":"ES","market":"future","direction":"long","entry":6878.5,"exit":6904.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260108_1","date":"2026-01-08","time":"","symbol":"ES","market":"future","direction":"long","entry":6957.5,"exit":6983.75,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"Unemployment Claims","emotion":"","rulesFollowed":true},{"id":"imp_20260115_2","date":"2026-01-15","time":"","symbol":"ES","market":"future","direction":"short","entry":7007.25,"exit":6981.0,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"London GDP/Claims","emotion":"","rulesFollowed":true},{"id":"imp_20260120_3","date":"2026-01-20","time":"","symbol":"ES","market":"future","direction":"long","entry":6890.75,"exit":6879.75,"size":1,"fees":0,"pnl":-550.0,"tags":["Imported"],"notes":"London Claimant/London BOE Gov","emotion":"","rulesFollowed":true},{"id":"imp_20260128_4","date":"2026-01-28","time":"","symbol":"ES","market":"future","direction":"long","entry":7009.25,"exit":6999.75,"size":1,"fees":0,"pnl":-475.0,"tags":["Imported"],"notes":"BOC/FOMC","emotion":"","rulesFollowed":true},{"id":"imp_20260130_5","date":"2026-01-30","time":"","symbol":"ES","market":"future","direction":"short","entry":6972.5,"exit":2946.25,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"Exit price in original sheet appears mistyped (2946.25); shown as recorded. GDP/Core PPI/PPI","emotion":"","rulesFollowed":true},{"id":"imp_20260204_6","date":"2026-02-04","time":"","symbol":"ES","market":"future","direction":"long","entry":6907.25,"exit":6897.0,"size":1,"fees":0,"pnl":-512.5,"tags":["Imported"],"notes":"ADP Non-Farm/ISM PMI","emotion":"","rulesFollowed":true},{"id":"imp_20260217_7","date":"2026-02-17","time":"","symbol":"ES","market":"future","direction":"long","entry":6846.25,"exit":6835.5,"size":1,"fees":0,"pnl":-537.5,"tags":["Imported"],"notes":"CPI","emotion":"","rulesFollowed":true},{"id":"imp_20260218_8","date":"2026-02-18","time":"","symbol":"ES","market":"future","direction":"short","entry":6921.5,"exit":6895.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"FOMC","emotion":"","rulesFollowed":true},{"id":"imp_20260219_9","date":"2026-02-19","time":"","symbol":"ES","market":"future","direction":"long","entry":6863.5,"exit":6852.5,"size":1,"fees":0,"pnl":-550.0,"tags":["Imported"],"notes":"Unemployment Claims","emotion":"","rulesFollowed":true},{"id":"imp_20260226_10","date":"2026-02-26","time":"","symbol":"ES","market":"future","direction":"long","entry":6888.75,"exit":6881.25,"size":1,"fees":0,"pnl":-375.0,"tags":["Imported"],"notes":"unemployment claims/post earnings","emotion":"","rulesFollowed":true},{"id":"imp_20260227_11","date":"2026-02-27","time":"","symbol":"ES","market":"future","direction":"short","entry":6883.25,"exit":6857.0,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"gdp/ppi","emotion":"","rulesFollowed":true},{"id":"imp_20260306_12","date":"2026-03-06","time":"","symbol":"ES","market":"future","direction":"long","entry":6754.25,"exit":6780.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"nfp/hella red folder news","emotion":"","rulesFollowed":true},{"id":"imp_20260311_13","date":"2026-03-11","time":"","symbol":"ES","market":"future","direction":"long","entry":6755.0,"exit":6781.0,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"CPI","emotion":"","rulesFollowed":true},{"id":"imp_20260319_14","date":"2026-03-19","time":"","symbol":"ES","market":"future","direction":"short","entry":6646.0,"exit":6619.75,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"unemployment claims/MRR/MPS/ECB","emotion":"","rulesFollowed":true},{"id":"imp_20260326_15","date":"2026-03-26","time":"","symbol":"ES","market":"future","direction":"long","entry":6593.5,"exit":6585.5,"size":1,"fees":0,"pnl":-400.0,"tags":["Imported"],"notes":"unemployment claims","emotion":"","rulesFollowed":true},{"id":"imp_20260327_16","date":"2026-03-27","time":"","symbol":"ES","market":"future","direction":"short","entry":6462.75,"exit":6472.75,"size":1,"fees":0,"pnl":-500.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260331_17","date":"2026-03-31","time":"","symbol":"ES","market":"future","direction":"long","entry":6470.25,"exit":6496.25,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"GDP/JOLTS","emotion":"","rulesFollowed":true},{"id":"imp_20260408_18","date":"2026-04-08","time":"","symbol":"ES","market":"future","direction":"short","entry":6799.0,"exit":6808.0,"size":1,"fees":0,"pnl":-450.0,"tags":["Imported"],"notes":"FOMC","emotion":"","rulesFollowed":true},{"id":"imp_20260414_19","date":"2026-04-14","time":"","symbol":"ES","market":"future","direction":"short","entry":6973.75,"exit":6982.5,"size":1,"fees":0,"pnl":-437.5,"tags":["Imported"],"notes":"CPPI/PPI","emotion":"","rulesFollowed":true},{"id":"imp_20260415_20","date":"2026-04-15","time":"","symbol":"ES","market":"future","direction":"short","entry":7031.25,"exit":7039.75,"size":1,"fees":0,"pnl":-425.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260417_21","date":"2026-04-17","time":"","symbol":"ES","market":"future","direction":"short","entry":7169.5,"exit":7179.75,"size":1,"fees":0,"pnl":-512.5,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260422_22","date":"2026-04-22","time":"","symbol":"ES","market":"future","direction":"long","entry":7122.75,"exit":7112.5,"size":1,"fees":0,"pnl":0.0,"tags":["Imported"],"notes":"Sheet recorded this as breakeven despite the price move; shown as recorded.","emotion":"","rulesFollowed":true},{"id":"imp_20260423_23","date":"2026-04-23","time":"","symbol":"ES","market":"future","direction":"short","entry":7176.5,"exit":7178.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"Sheet's P&L (win) doesn't match entry/exit price move for this row — possible price typo in original sheet; P&L shown as recorded.","emotion":"","rulesFollowed":true},{"id":"imp_20260428_24","date":"2026-04-28","time":"","symbol":"ES","market":"future","direction":"long","entry":7152.5,"exit":7178.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260508_25","date":"2026-05-08","time":"","symbol":"ES","market":"future","direction":"short","entry":7420.5,"exit":7394.25,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"nfp","emotion":"","rulesFollowed":true},{"id":"imp_20260515_26","date":"2026-05-15","time":"","symbol":"ES","market":"future","direction":"long","entry":7440.5,"exit":7466.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260519_27","date":"2026-05-19","time":"","symbol":"ES","market":"future","direction":"long","entry":7360.25,"exit":7386.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"cpi","emotion":"","rulesFollowed":true},{"id":"imp_20260520_28","date":"2026-05-20","time":"","symbol":"ES","market":"future","direction":"short","entry":7445.5,"exit":7419.25,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"fomc","emotion":"","rulesFollowed":true},{"id":"imp_20260521_29","date":"2026-05-21","time":"","symbol":"ES","market":"future","direction":"long","entry":7419.5,"exit":7410.25,"size":1,"fees":0,"pnl":-462.5,"tags":["Imported"],"notes":"boe gov","emotion":"","rulesFollowed":true},{"id":"imp_20260528_30","date":"2026-05-28","time":"","symbol":"ES","market":"future","direction":"long","entry":7572.75,"exit":7598.75,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"cppi/gdp","emotion":"","rulesFollowed":true},{"id":"imp_20260529_31","date":"2026-05-29","time":"","symbol":"ES","market":"future","direction":"short","entry":7601.25,"exit":7610.75,"size":1,"fees":0,"pnl":-475.0,"tags":["Imported"],"notes":"gdp","emotion":"","rulesFollowed":true},{"id":"imp_20260603_32","date":"2026-06-03","time":"","symbol":"ES","market":"future","direction":"long","entry":7583.75,"exit":7573.75,"size":1,"fees":0,"pnl":-500.0,"tags":["Imported"],"notes":"pmi","emotion":"","rulesFollowed":true},{"id":"imp_20260616_33","date":"2026-06-16","time":"","symbol":"ES","market":"future","direction":"long","entry":7608.0,"exit":7597.25,"size":1,"fees":0,"pnl":-537.5,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260617_34","date":"2026-06-17","time":"","symbol":"ES","market":"future","direction":"short","entry":7590.5,"exit":7564.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"fomc","emotion":"","rulesFollowed":true},{"id":"imp_20260618_35","date":"2026-06-18","time":"","symbol":"ES","market":"future","direction":"short","entry":7562.0,"exit":7570.5,"size":1,"fees":0,"pnl":-425.0,"tags":["Imported"],"notes":"mpc/official bank rate","emotion":"","rulesFollowed":true},{"id":"imp_20260709_36","date":"2026-07-09","time":"","symbol":"ES","market":"future","direction":"long","entry":7548.75,"exit":7574.75,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"unemp claims","emotion":"","rulesFollowed":true},{"id":"imp_20260716_37","date":"2026-07-16","time":"","symbol":"ES","market":"future","direction":"short","entry":7610.25,"exit":7584.25,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260717_38","date":"2026-07-17","time":"","symbol":"ES","market":"future","direction":"long","entry":7515.0,"exit":7503.25,"size":1,"fees":0,"pnl":-587.5,"tags":["Imported"],"notes":"Extended 23.5 points before reversing.","emotion":"","rulesFollowed":true},{"id":"imp_20260724_39","date":"2026-07-24","time":"","symbol":"ES","market":"future","direction":"short","entry":7493.25,"exit":7467.0,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260729_40","date":"2026-07-29","time":"","symbol":"ES","market":"future","direction":"short","entry":7408.25,"exit":7382.0,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"FOMC","emotion":"","rulesFollowed":true},{"id":"imp_20260804_41","date":"2026-08-04","time":"","symbol":"ES","market":"future","direction":"long","entry":7739.25,"exit":7748.5,"size":1,"fees":0,"pnl":-475.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260806_42","date":"2026-08-06","time":"","symbol":"ES","market":"future","direction":"short","entry":7740.25,"exit":7754.25,"size":1,"fees":0,"pnl":-700.0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260811_43","date":"2026-08-11","time":"","symbol":"ES","market":"future","direction":"short","entry":7767.5,"exit":7741.5,"size":1,"fees":0,"pnl":1300.0,"tags":["Imported"],"notes":"Cash Rate/RBA","emotion":"","rulesFollowed":true}];
+  var IMPORTED_TRADES = [{"id":"imp_20260102_0","date":"2026-01-02","time":"","symbol":"ES","market":"future","direction":"long","entry":6878.5,"exit":6904.5,"size":1,"fees":0,"pnl":1300,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260108_1","date":"2026-01-08","time":"","symbol":"ES","market":"future","direction":"long","entry":6957.5,"exit":6983.75,"size":1,"fees":0,"pnl":1300,"tags":["Imported"],"notes":"Unemployment Claims","emotion":"","rulesFollowed":true},{"id":"imp_20260115_2","date":"2026-01-15","time":"","symbol":"ES","market":"future","direction":"short","entry":7007.25,"exit":6981,"size":1,"fees":0,"pnl":1300,"tags":["Imported"],"notes":"London GDP/Claims","emotion":"","rulesFollowed":true},{"id":"imp_20260120_3","date":"2026-01-20","time":"","symbol":"ES","market":"future","direction":"long","entry":6890.75,"exit":6879.75,"size":1,"fees":0,"pnl":-550,"tags":["Imported"],"notes":"London Claimant/London BOE Gov","emotion":"","rulesFollowed":true},{"id":"imp_20260128_4","date":"2026-01-28","time":"","symbol":"ES","market":"future","direction":"long","entry":7009.25,"exit":6999.75,"size":1,"fees":0,"pnl":-475,"tags":["Imported"],"notes":"BOC/FOMC","emotion":"","rulesFollowed":true},{"id":"imp_20260130_5","date":"2026-01-30","time":"","symbol":"ES","market":"future","direction":"short","entry":6972.5,"exit":2946.25,"size":1,"fees":0,"pnl":1300,"tags":["Imported"],"notes":"Exit price in original sheet appears mistyped (2946.25); shown as recorded. GDP/Core PPI/PPI","emotion":"","rulesFollowed":true},{"id":"imp_20260204_6","date":"2026-02-04","time":"","symbol":"ES","market":"future","direction":"long","entry":6907.25,"exit":6897,"size":1,"fees":0,"pnl":-512.5,"tags":["Imported"],"notes":"ADP Non-Farm/ISM PMI","emotion":"","rulesFollowed":true},{"id":"imp_20260217_7","date":"2026-02-17","time":"","symbol":"ES","market":"future","direction":"long","entry":6846.25,"exit":6835.5,"size":1,"fees":0,"pnl":-537.5,"tags":["Imported"],"notes":"CPI","emotion":"","rulesFollowed":true},{"id":"imp_20260218_8","date":"2026-02-18","time":"","symbol":"ES","market":"future","direction":"short","entry":6921.5,"exit":6895.5,"size":1,"fees":0,"pnl":1300,"tags":["Imported"],"notes":"FOMC","emotion":"","rulesFollowed":true},{"id":"imp_20260219_9","date":"2026-02-19","time":"","symbol":"ES","market":"future","direction":"long","entry":6863.5,"exit":6852.5,"size":1,"fees":0,"pnl":-550,"tags":["Imported"],"notes":"Unemployment Claims","emotion":"","rulesFollowed":true},{"id":"imp_20260226_10","date":"2026-02-26","time":"","symbol":"ES","market":"future","direction":"long","entry":6888.75,"exit":6881.25,"size":1,"fees":0,"pnl":-375,"tags":["Imported"],"notes":"unemployment claims/post earnings","emotion":"","rulesFollowed":true},{"id":"imp_20260227_11","date":"2026-02-27","time":"","symbol":"ES","market":"future","direction":"short","entry":6883.25,"exit":6857,"size":1,"fees":0,"pnl":1300,"tags":["Imported"],"notes":"gdp/ppi","emotion":"","rulesFollowed":true},{"id":"imp_20260306_1","date":"2026-03-06","time":"11:15","exitTime":"13:00","symbol":"ES","market":"future","direction":"long","entry":6754.25,"exit":6780.5,"size":1,"fees":0,"pnl":1312.5,"mae":762.5,"mfe":1312.5,"tags":["Imported"],"notes":"nfp/hella red folder news","emotion":"","rulesFollowed":true},{"id":"imp_20260311_2","date":"2026-03-11","time":"12:15","exitTime":"13:00","symbol":"ES","market":"future","direction":"long","entry":6755,"exit":6781,"size":1,"fees":0,"pnl":1300,"mae":62.5,"mfe":1300,"tags":["Imported"],"notes":"CPI","emotion":"","rulesFollowed":true},{"id":"imp_20260319_3","date":"2026-03-19","time":"12:30","exitTime":"13:00","symbol":"ES","market":"future","direction":"short","entry":6646,"exit":6619.75,"size":1,"fees":0,"pnl":1312.5,"mae":100,"mfe":1312.5,"tags":["Imported"],"notes":"unemployment claims/MRR/MPS/ECB","emotion":"","rulesFollowed":true},{"id":"imp_20260326_4","date":"2026-03-26","time":"11:15","exitTime":"11:30","symbol":"ES","market":"future","direction":"long","entry":6593.5,"exit":6585.5,"size":1,"fees":0,"pnl":-400,"mae":400,"mfe":0,"tags":["Imported"],"notes":"unemployment claims","emotion":"","rulesFollowed":true},{"id":"imp_20260327_5","date":"2026-03-27","time":"10:45","exitTime":"10:45","symbol":"ES","market":"future","direction":"short","entry":6462.75,"exit":6472.75,"size":1,"fees":0,"pnl":-500,"mae":500,"mfe":0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260331_6","date":"2026-03-31","time":"11:45","exitTime":"12:30","symbol":"ES","market":"future","direction":"long","entry":6470.25,"exit":6496.25,"size":1,"fees":0,"pnl":1300,"mae":387.5,"mfe":1300,"tags":["Imported"],"notes":"GDP/JOLTS","emotion":"","rulesFollowed":true},{"id":"imp_20260408_7","date":"2026-04-08","time":"11:30","exitTime":"11:30","symbol":"ES","market":"future","direction":"short","entry":6799,"exit":6808,"size":1,"fees":0,"pnl":-450,"mae":450,"mfe":0,"tags":["Imported"],"notes":"FOMC","emotion":"","rulesFollowed":true},{"id":"imp_20260414_8","date":"2026-04-14","time":"10:45","exitTime":"11:15","symbol":"ES","market":"future","direction":"short","entry":6973.75,"exit":6982.5,"size":1,"fees":0,"pnl":-437.5,"mae":437.5,"mfe":150,"tags":["Imported"],"notes":"CPPI/PPI","emotion":"","rulesFollowed":true},{"id":"imp_20260415_9","date":"2026-04-15","time":"11:00","exitTime":"12:15","symbol":"ES","market":"future","direction":"short","entry":7031.25,"exit":7039.75,"size":1,"fees":0,"pnl":-425,"mae":425,"mfe":75,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260417_10","date":"2026-04-17","time":"11:30","exitTime":"12:30","symbol":"ES","market":"future","direction":"short","entry":7169.5,"exit":7179.75,"size":1,"fees":0,"pnl":-512.5,"mae":512.5,"mfe":187.5,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260421_11","date":"2026-04-21","time":"12:15","exitTime":"13:00","symbol":"ES","market":"future","direction":"long","entry":7122.75,"exit":7112.5,"size":1,"fees":0,"pnl":-512.5,"mae":512.5,"mfe":412.5,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260423_12","date":"2026-04-23","time":"11:15","exitTime":"13:00","symbol":"ES","market":"future","direction":"short","entry":7176.5,"exit":7150.5,"size":1,"fees":0,"pnl":1300,"mae":250,"mfe":1300,"tags":["Imported"],"notes":"Sheet's P&L (win) doesn't match entry/exit price move for this row — possible price typo in original sheet; P&L shown as recorded.","emotion":"","rulesFollowed":true},{"id":"imp_20260428_13","date":"2026-04-28","time":"11:00","exitTime":"19:30","symbol":"ES","market":"future","direction":"long","entry":7152.5,"exit":7178.5,"size":1,"fees":0,"pnl":1300,"mae":262.5,"mfe":1300,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260508_14","date":"2026-05-08","time":"11:00","exitTime":"","symbol":"ES","market":"future","direction":"short","entry":7420.5,"exit":7394.25,"size":1,"fees":0,"pnl":1312.5,"mae":362.5,"mfe":1312.5,"tags":["Imported"],"notes":"nfp","emotion":"","rulesFollowed":true},{"id":"imp_20260515_15","date":"2026-05-15","time":"12:15","exitTime":"13:15","symbol":"ES","market":"future","direction":"long","entry":7440.5,"exit":7466.5,"size":1,"fees":0,"pnl":1300,"mae":62.5,"mfe":1300,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260519_16","date":"2026-05-19","time":"11:15","exitTime":"12:15","symbol":"ES","market":"future","direction":"long","entry":7360.25,"exit":7386.5,"size":1,"fees":0,"pnl":1312.5,"mae":225,"mfe":1312.5,"tags":["Imported"],"notes":"cpi","emotion":"","rulesFollowed":true},{"id":"imp_20260520_17","date":"2026-05-20","time":"13:30","exitTime":"18:00","symbol":"ES","market":"future","direction":"short","entry":7445.5,"exit":7419.25,"size":1,"fees":0,"pnl":1312.5,"mae":475,"mfe":1312.5,"tags":["Imported"],"notes":"fomc","emotion":"","rulesFollowed":true},{"id":"imp_20260521_18","date":"2026-05-21","time":"10:45","exitTime":"11:00","symbol":"ES","market":"future","direction":"long","entry":7419.5,"exit":7410.25,"size":1,"fees":0,"pnl":-462.5,"mae":462.5,"mfe":562.5,"tags":["Imported"],"notes":"boe gov","emotion":"","rulesFollowed":true},{"id":"imp_20260528_19","date":"2026-05-28","time":"21:30","exitTime":"","symbol":"ES","market":"future","direction":"long","entry":7572.75,"exit":7598.75,"size":1,"fees":0,"pnl":1300,"mae":0,"mfe":1300,"tags":["Imported"],"notes":"cppi/gdp","emotion":"","rulesFollowed":true},{"id":"imp_20260529_20","date":"2026-05-29","time":"12:00","exitTime":"","symbol":"ES","market":"future","direction":"short","entry":7601.25,"exit":7610.75,"size":1,"fees":0,"pnl":-475,"mae":475,"mfe":975,"tags":["Imported"],"notes":"gdp","emotion":"","rulesFollowed":true},{"id":"imp_20260603_21","date":"2026-06-03","time":"11:30","exitTime":"12:15","symbol":"ES","market":"future","direction":"long","entry":7583.75,"exit":7573.75,"size":1,"fees":0,"pnl":-500,"mae":500,"mfe":0,"tags":["Imported"],"notes":"pmi","emotion":"","rulesFollowed":true},{"id":"imp_20260616_22","date":"2026-06-16","time":"10:45","exitTime":"15:00","symbol":"ES","market":"future","direction":"long","entry":7608,"exit":7597.25,"size":1,"fees":0,"pnl":-537.5,"mae":537.5,"mfe":712.5,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260617_23","date":"2026-06-17","time":"12:15","exitTime":"14:00","symbol":"ES","market":"future","direction":"short","entry":7590.5,"exit":7564.5,"size":1,"fees":0,"pnl":1300,"mae":137.5,"mfe":1300,"tags":["Imported"],"notes":"fomc","emotion":"","rulesFollowed":true},{"id":"imp_20260618_24","date":"2026-06-18","time":"12:15","exitTime":"12:30","symbol":"ES","market":"future","direction":"short","entry":7562,"exit":7570.5,"size":1,"fees":0,"pnl":-425,"mae":425,"mfe":75,"tags":["Imported"],"notes":"mpc/official bank rate","emotion":"","rulesFollowed":true},{"id":"imp_20260709_25","date":"2026-07-09","time":"10:45","exitTime":"11:15","symbol":"ES","market":"future","direction":"long","entry":7548.75,"exit":7574.75,"size":1,"fees":0,"pnl":1300,"mae":100,"mfe":1300,"tags":["Imported"],"notes":"unemp claims","emotion":"","rulesFollowed":true},{"id":"imp_20260716_26","date":"2026-07-16","time":"11:45","exitTime":"12:15","symbol":"ES","market":"future","direction":"short","entry":7610.25,"exit":7584.25,"size":1,"fees":0,"pnl":1300,"mae":0,"mfe":1300,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260717_27","date":"2026-07-17","time":"11:45","exitTime":"14:15","symbol":"ES","market":"future","direction":"long","entry":7515,"exit":7503.25,"size":1,"fees":0,"pnl":-587.5,"mae":587.5,"mfe":1175,"tags":["Imported"],"notes":"Extended 23.5 points before reversing.","emotion":"","rulesFollowed":true},{"id":"imp_20260724_28","date":"2026-07-24","time":"12:15","exitTime":"12:45","symbol":"ES","market":"future","direction":"short","entry":7493.25,"exit":7467,"size":1,"fees":0,"pnl":1312.5,"mae":100,"mfe":1312.5,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260729_29","date":"2026-07-29","time":"11:15","exitTime":"12:00","symbol":"ES","market":"future","direction":"short","entry":7408.25,"exit":7382,"size":1,"fees":0,"pnl":1312.5,"mae":125,"mfe":1312.5,"tags":["Imported"],"notes":"FOMC","emotion":"","rulesFollowed":true},{"id":"imp_20260804_30","date":"2026-08-04","time":"12:15","exitTime":"12:30","symbol":"ES","market":"future","direction":"short","entry":7739.25,"exit":7748.5,"size":1,"fees":0,"pnl":-462.5,"mae":462.5,"mfe":0,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260806_31","date":"2026-08-06","time":"13:00","exitTime":"","symbol":"ES","market":"future","direction":"short","entry":7740.25,"exit":7754.25,"size":1,"fees":0,"pnl":-700,"mae":700,"mfe":737.5,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true},{"id":"imp_20260811_32","date":"2026-08-11","time":"12:15","exitTime":"14:15","symbol":"ES","market":"future","direction":"short","entry":7767.5,"exit":7741.5,"size":1,"fees":0,"pnl":1300,"mae":112.5,"mfe":1300,"tags":["Imported"],"notes":"Cash Rate/RBA","emotion":"","rulesFollowed":true},{"id":"imp_20260812_33","date":"2026-08-12","time":"10:45","exitTime":"","symbol":"ES","market":"future","direction":"long","entry":7764.25,"exit":7790.5,"size":1,"fees":0,"pnl":1312.5,"mae":200,"mfe":1312.5,"tags":["Imported"],"notes":"","emotion":"","rulesFollowed":true}];
 
   // ==========================================================================
   // DOM / format helpers
@@ -297,6 +297,101 @@
     return { version: 1, syncedAt: Date.now(), trades: state.trades, accounts: state.accounts, watchlist: state.watchlist, settings: state.settings };
   }
 
+  // ==========================================================================
+  // Theme color — one user-picked accent hex derives every accent/gold CSS
+  // variable at runtime (documentElement inline style beats the :root rule in
+  // styles.css, so this recolors the whole app: buttons, glows, the sidebar
+  // accent bar, brand mark, chart accents, etc.). Stored in state.settings so
+  // it syncs like any other setting. Semantic colors (--gain/--loss/--warn)
+  // are never touched — wins/losses/alerts stay their own fixed colors no
+  // matter what accent is picked.
+  // ==========================================================================
+  var DEFAULT_THEME_COLOR = '#FF4DE0';
+  var THEME_PRESETS = [
+    { name: 'Magenta', hex: '#FF4DE0' },
+    { name: 'Cyan', hex: '#00D4FF' },
+    { name: 'Violet', hex: '#9B6BFF' },
+    { name: 'Amber', hex: '#FFB23B' },
+    { name: 'Indigo', hex: '#5B7CFA' },
+    { name: 'Coral', hex: '#FF6B4D' }
+  ];
+  function hexToRgb(hex) {
+    var h = (hex || '').replace('#', '');
+    if (h.length === 3) h = h.split('').map(function (c) { return c + c; }).join('');
+    if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+    var num = parseInt(h, 16);
+    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+  }
+  function rgbToHex(r, g, b) {
+    function h(n) { var s = Math.max(0, Math.min(255, Math.round(n))).toString(16); return s.length === 1 ? '0' + s : s; }
+    return '#' + h(r) + h(g) + h(b);
+  }
+  function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    var max = Math.max(r, g, b), min = Math.min(r, g, b), h, s, l = (max + min) / 2;
+    if (max === min) { h = s = 0; }
+    else {
+      var d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h /= 6;
+    }
+    return { h: h, s: s, l: l };
+  }
+  function hslToRgb(h, s, l) {
+    var r, g, b;
+    if (s === 0) { r = g = b = l; }
+    else {
+      var hue2rgb = function (p, q, t) {
+        if (t < 0) t += 1; if (t > 1) t -= 1;
+        if (t < 1 / 6) return p + (q - p) * 6 * t;
+        if (t < 1 / 2) return q;
+        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+        return p;
+      };
+      var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      var p = 2 * l - q;
+      r = hue2rgb(p, q, h + 1 / 3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1 / 3);
+    }
+    return { r: r * 255, g: g * 255, b: b * 255 };
+  }
+  function deriveThemeVars(hex) {
+    var rgb = hexToRgb(hex);
+    if (!rgb) return null;
+    var hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    var light = hslToRgb(hsl.h, Math.min(1, hsl.s * 0.92 + 0.05), Math.min(0.86, hsl.l + 0.16));
+    var soft = hslToRgb(hsl.h, hsl.s * 0.72, Math.max(0.32, hsl.l - 0.2));
+    var accentHex = rgbToHex(rgb.r, rgb.g, rgb.b);
+    var rgbStr = rgb.r + ',' + rgb.g + ',' + rgb.b;
+    return {
+      accent: accentHex,
+      accent2: rgbToHex(light.r, light.g, light.b),
+      accentDim: 'rgba(' + rgbStr + ',0.14)',
+      accentGlow: 'rgba(' + rgbStr + ',0.45)',
+      gold: accentHex,
+      goldSoft: rgbToHex(soft.r, soft.g, soft.b),
+      goldDim: 'rgba(' + rgbStr + ',0.14)'
+    };
+  }
+  var lastAppliedThemeColor = null;
+  function applyThemeColor(hex) {
+    var use = hex || DEFAULT_THEME_COLOR;
+    if (use === lastAppliedThemeColor) return;
+    var t = deriveThemeVars(use);
+    if (!t) return;
+    lastAppliedThemeColor = use;
+    var root = document.documentElement.style;
+    root.setProperty('--accent', t.accent);
+    root.setProperty('--accent-2', t.accent2);
+    root.setProperty('--accent-dim', t.accentDim);
+    root.setProperty('--accent-glow', t.accentGlow);
+    root.setProperty('--gold', t.gold);
+    root.setProperty('--gold-soft', t.goldSoft);
+    root.setProperty('--gold-dim', t.goldDim);
+  }
+
   function loadLocal() {
     state.trades = LocalStore.get('trades') || [];
     state.accounts = LocalStore.get('accounts') || [];
@@ -428,20 +523,38 @@
     return s;
   }
 
-  // Shared peak/drawdown walk over a cumulative equity curve — used by both
-  // the Dashboard equity chart and the Max Drawdown HUD cell so the two
-  // numbers never drift apart.
+  // Shared peak/drawdown walk over a cumulative equity curve — used by the
+  // Dashboard equity chart, the Max Drawdown HUD cell, and per-account
+  // drawdown-guardrail tracking, so the numbers never drift apart.
+  //
+  // Mark-to-market aware: when a trade logs a `mae` (worst point during the
+  // trade, in $, always >= 0 — "how far underwater it got before it closed"),
+  // the walk also checks the equity low reached WHILE that trade was open
+  // (peak-so-far minus that trade's own MAE), not just the P&L at its close.
+  // A trade that dipped hard against you and then recovered into a small
+  // loss (or even a win) by the time you exited still counts here — that's
+  // the same mark-to-market drawdown a live prop-firm account would see.
+  // Trades without an mae value fall back to closed-trade-only, so this
+  // degrades gracefully for history that doesn't have excursion data.
   function maxDrawdownStats(sorted) {
-    if (!sorted || !sorted.length) return { maxDD: 0, currentDD: 0, hasTrades: false };
-    var cum = 0, peak = 0, maxDD = 0, currentDD = 0;
+    if (!sorted || !sorted.length) return { maxDD: 0, currentDD: 0, hasTrades: false, usedMae: false, maeCoverage: 0 };
+    var cum = 0, peak = 0, maxDD = 0, currentDD = 0, maeCount = 0;
     sorted.forEach(function (t) {
-      cum += Number(t.pnl) || 0;
+      var pnl = Number(t.pnl) || 0;
+      var mae = Math.abs(Number(t.mae) || 0);
+      if (mae > 0) {
+        maeCount++;
+        var openLow = cum - mae;
+        var ddAtOpenLow = peak - openLow;
+        if (ddAtOpenLow > maxDD) maxDD = ddAtOpenLow;
+      }
+      cum += pnl;
       if (cum > peak) peak = cum;
       var dd = peak - cum;
       if (dd > maxDD) maxDD = dd;
       currentDD = dd;
     });
-    return { maxDD: maxDD, currentDD: currentDD, hasTrades: true };
+    return { maxDD: maxDD, currentDD: currentDD, hasTrades: true, usedMae: maeCount > 0, maeCoverage: maeCount / sorted.length };
   }
 
   function groupBy(trades, keyFn) {
@@ -464,6 +577,7 @@
   // Render dispatch
   // ==========================================================================
   function render() {
+    applyThemeColor(state.settings && state.settings.themeColor);
     $all('.nav-item').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === state.tab); });
     var main = $('#main');
     if (!state.loaded) { main.innerHTML = '<div class="empty-state"><div class="em-title">Loading your ledger…</div></div>'; return; }
@@ -476,6 +590,7 @@
     else if (state.tab === 'coach') renderCoach(main);
     else if (state.tab === 'settings') renderSettings(main);
     renderPulse();
+    renderTicker();
   }
 
   function renderPulse() {
@@ -542,12 +657,17 @@
   function hudStrip(s) {
     var td = todayStats();
     var dd = maxDrawdownStats(s && s.sorted);
-    var ddCls = dd.currentDD > 0.5 ? 'loss' : '';
+    var ddNote = dd.hasTrades && dd.usedMae
+      ? (dd.maeCoverage >= 0.999 ? 'mark-to-market' : 'mark-to-market, partial data')
+      : (dd.hasTrades ? 'closed trades only' : '');
     return '<div class="hud-strip">' +
       hudCell("Today's P&L", fmtMoney(td.net), td.net >= 0 ? 'gain' : 'loss') +
       hudCell('Trades Today', String(td.count)) +
       vixHudCell() +
-      hudCell('Max Drawdown', dd.hasTrades ? fmtMoney(dd.maxDD) : '—', dd.maxDD > 0 ? 'loss' : '') +
+      '<div class="hud-cell"><div class="hud-label">Max Drawdown</div>' +
+      '<div class="hud-value">' + (dd.hasTrades ? fmtMoney(dd.maxDD) : '—') + '</div>' +
+      (ddNote ? '<div style="font-size:9.5px; color:var(--text-faint); margin-top:2px;" title="Uses each trade\'s logged worst-point-during-trade (MAE) where available, not just P&amp;L at close.">' + ddNote + '</div>' : '') +
+      '</div>' +
       '</div>';
   }
 
@@ -981,9 +1101,9 @@
     var net = IMPORTED_TRADES.reduce(function (s, t) { return s + t.pnl; }, 0);
     var ok = confirm(
       'Import ' + IMPORTED_TRADES.length + ' trades from your ES futures history?\n\n' +
-      'ES futures, Jan 2 – Aug 11 2026\n' +
+      'ES futures, Jan 2 – Aug 12 2026\n' +
       'Net P&L: ' + fmtMoney(net) + '\n\n' +
-      'A couple of rows had inconsistencies in the original sheet (a mistyped price, and one trade whose P&L didn\'t match its price move) — these are imported as recorded, with a note flagged on that trade so you can double check it.'
+      'Jan–Feb rows come from an earlier hand-transcribed sheet. March onward comes from a TradingView strategy export, so those rows also carry each trade\'s worst/best point while it was open (MAE/MFE) — that\'s what powers the "mark-to-market" Max Drawdown figure on the Dashboard.'
     );
     if (!ok) return;
     var now = Date.now();
@@ -1808,6 +1928,42 @@
   }
   function getQuote(symbol) { return state.quotes[mapToYahooTicker(symbol)] || null; }
 
+  // ---- Bloomberg-style live ticker strip, shown on every tab (see index.html
+  // .ticker-strip / .ticker-track). Reuses the same quote fetcher as the
+  // Watchlist and VIX HUD cell — no separate network path, just a second
+  // consumer of state.quotes. Purely cosmetic beyond that: a CSS marquee
+  // over two duplicated copies of the same item list for a seamless loop.
+  var TICKER_DEFAULT_SYMBOLS = ['ES', 'NQ', 'YM', 'RTY', 'GC', 'CL', 'VIX'];
+  function tickerSymbols() {
+    var wl = (state.watchlist || []).map(function (w) { return (w.symbol || '').toUpperCase().trim(); }).filter(Boolean);
+    var seen = {}, out = [];
+    TICKER_DEFAULT_SYMBOLS.concat(wl).forEach(function (s) { if (!seen[s]) { seen[s] = true; out.push(s); } });
+    return out;
+  }
+  function renderTicker() {
+    var track = $('#tickerTrack');
+    if (!track) return;
+    var symbols = tickerSymbols();
+    symbols.forEach(function (s) { ensureQuote(s); });
+    var items = symbols.map(function (s) {
+      var q = getQuote(s);
+      if (!q || q.status === 'loading') {
+        return '<span class="ticker-item"><span class="ticker-sym">' + esc(s) + '</span><span class="ticker-load">···</span></span>';
+      }
+      if (q.status === 'error' || q.price == null) {
+        return '<span class="ticker-item"><span class="ticker-sym">' + esc(s) + '</span><span class="ticker-load">n/a</span></span>';
+      }
+      var cls = q.change == null ? '' : (q.change >= 0 ? 'gain' : 'loss');
+      var arrow = q.change == null ? '' : (q.change >= 0 ? '▲' : '▼');
+      var changeStr = q.change == null ? '' : (arrow + ' ' + (q.change >= 0 ? '+' : '') + q.change.toFixed(2) + (q.changePct != null ? ' (' + (q.changePct >= 0 ? '+' : '') + q.changePct.toFixed(2) + '%)' : ''));
+      return '<span class="ticker-item"><span class="ticker-sym">' + esc(s) + '</span><span class="ticker-price">' + q.price.toFixed(2) + '</span>' +
+        (changeStr ? '<span class="ticker-chg ' + cls + '">' + changeStr + '</span>' : '') + '</span>';
+    }).join('<span class="ticker-sep">•</span>');
+    // Two identical copies back-to-back — the CSS animation translates exactly
+    // one copy's width (-50%) so the loop is seamless with no visible seam/jump.
+    track.innerHTML = '<span class="ticker-set">' + items + '</span><span class="ticker-set" aria-hidden="true">' + items + '</span>';
+  }
+
   // Small inline SVG sparkline shared by the Watchlist and the Dashboard VIX cell.
   function sparklineSvg(points, w, h, colorOverride) {
     if (!points || points.length < 2) return '';
@@ -1832,13 +1988,20 @@
     trades.forEach(function (t) { byDay[t.date] = (byDay[t.date] || 0) + (Number(t.pnl) || 0); });
     var worstDay = 0, worstDayDate = null;
     Object.keys(byDay).forEach(function (d) { if (byDay[d] < worstDay) { worstDay = byDay[d]; worstDayDate = d; } });
-    var sorted = trades.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
-    var cum = 0, peak = 0;
-    sorted.forEach(function (t) { cum += Number(t.pnl) || 0; if (cum > peak) peak = cum; });
-    var trailingUsed = peak - cum;
+    var sorted = trades.slice().sort(function (a, b) { return (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')); });
+    // Trailing drawdown: mark-to-market where trades have MAE logged, so a
+    // firm-limit breach that happened mid-trade (then recovered by close)
+    // still shows up — same fix as the Dashboard's Max Drawdown, see
+    // maxDrawdownStats() above. `trailingUsed` is where you stand right now
+    // (current distance below peak); `trailingWorstEver` is the worst it
+    // ever got, which is what actually determines a breach.
+    var trailingStats = maxDrawdownStats(sorted);
+    var trailingUsed = trailingStats.currentDD;
+    var trailingWorstEver = trailingStats.maxDD;
     var staticUsed = net < 0 ? Math.abs(net) : 0; // static DD: measured off starting balance, not peak
     var ddType = acc.ddType === 'static' ? 'static' : 'trailing';
     var ddUsed = ddType === 'static' ? staticUsed : trailingUsed;
+    var ddWorstEver = ddType === 'static' ? staticUsed : trailingWorstEver;
     var target = Number(acc.profitTarget) || 0;
     var maxDD = Number(acc.maxDrawdown) || 0;
     var dailyLimit = Number(acc.dailyLoss) || 0;
@@ -1850,23 +2013,25 @@
     var cumR = rs.length ? rs.reduce(function (a, b) { return a + b; }, 0) : null;
     return {
       trades: trades, count: trades.length, net: net, byDay: byDay,
-      worstDay: worstDay, worstDayDate: worstDayDate, peak: peak, trailingUsed: trailingUsed,
+      worstDay: worstDay, worstDayDate: worstDayDate, trailingUsed: trailingUsed,
+      trailingWorstEver: trailingWorstEver, usedMae: trailingStats.usedMae,
       ddType: ddType, ddUsed: ddUsed, ddBuffer: maxDD > 0 ? Math.max(0, maxDD - ddUsed) : null,
       tradingDays: tradingDays, minDays: minDays, daysBuffer: minDays > 0 ? Math.max(0, minDays - tradingDays) : null,
       payoutEstimate: payoutEstimate, cumR: cumR,
       targetPct: target > 0 ? Math.max(0, Math.min(100, net / target * 100)) : null,
       ddPct: maxDD > 0 ? Math.max(0, Math.min(100, ddUsed / maxDD * 100)) : null,
       dailyBreached: dailyLimit > 0 && Math.abs(worstDay) >= dailyLimit,
-      ddBreached: maxDD > 0 && ddUsed >= maxDD,
+      ddBreached: maxDD > 0 && ddWorstEver >= maxDD,
       passed: target > 0 && net >= target
     };
   }
 
-  // Combined equity curves — one line per account (fixed categorical order,
-  // validated colorblind-safe for dark mode) plus a neutral dashed line for
-  // personal/untagged trades, all on one $ axis, sequence-indexed like the
-  // main Dashboard equity curve. Direct end-labels satisfy the dataviz
-  // requirement given the tritan-safe floor on this 3-hue palette.
+  // Combined equity curves — one line per prop account only (fixed
+  // categorical order, validated colorblind-safe for dark mode), all on one
+  // $ axis, sequence-indexed like the main Dashboard equity curve. Personal/
+  // untagged trades are deliberately excluded — this chart is scoped to
+  // prop-firm accounts, not your personal trading. Direct end-labels satisfy
+  // the dataviz requirement given the tritan-safe floor on this 3-hue palette.
   var ACCT_EQUITY_PALETTE = ['#E0349E', '#1584C4', '#7C5CFC'];
   function accountsEquityChart(accts) {
     function cumPts(trades) {
@@ -1892,16 +2057,9 @@
       var restPts = cumPts(restTrades);
       series.push({ name: 'Other accounts (' + (withTrades.length - ACCT_EQUITY_PALETTE.length) + ')', color: 'var(--text-faint)', pts: restPts, net: restPts[restPts.length - 1], n: restTrades.length, dashed: '3 4' });
     }
-    var untagged = active(state.trades).filter(function (t) { return !t.accountId; })
-      .slice().sort(function (a, b) { return (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')); });
-    if (untagged.length) {
-      var uPts = cumPts(untagged);
-      series.push({ name: 'Personal / Untagged', color: 'var(--text-faint)', pts: uPts, net: uPts[uPts.length - 1], n: untagged.length, dashed: '2 3' });
-    }
-
     if (!series.length) {
-      return '<div class="panel"><div class="panel-title">Combined Equity — every account + personal</div>' +
-        '<div style="color:var(--text-faint); font-size:12.5px; padding:6px 0;">No trades logged on any account yet — tag trades to an account (or leave them personal) in the trade form and this fills in with a combined equity view.</div></div>';
+      return '<div class="panel"><div class="panel-title">Combined Equity — all prop accounts</div>' +
+        '<div style="color:var(--text-faint); font-size:12.5px; padding:6px 0;">No trades logged on any account yet — tag trades to an account in the trade form and this fills in with a combined equity view.</div></div>';
     }
 
     var allVals = [0];
@@ -1935,7 +2093,7 @@
         return '<div class="acct-eq-legend-item"><span class="acct-eq-dot" style="background:' + s.color + ';"></span>' + esc(s.name) +
           ' <b style="color:var(--' + cls + '); font-family:var(--font-mono);">' + fmtMoney(s.net) + '</b> <span style="color:var(--text-faint);">· ' + s.n + '×</span></div>';
       }).join('') + '</div>' : '';
-    return '<div class="panel"><div class="panel-title">Combined Equity <span style="font-weight:400; font-size:10px; color:var(--text-faint); text-transform:none; letter-spacing:0;">every account + personal, on one curve</span></div>' +
+    return '<div class="panel"><div class="panel-title">Combined Equity <span style="font-weight:400; font-size:10px; color:var(--text-faint); text-transform:none; letter-spacing:0;">every prop account, on one curve</span></div>' +
       '<svg viewBox="0 0 ' + w + ' ' + h + '" style="width:100%; height:220px;">' +
       '<line x1="' + padL + '" y1="' + zeroY.toFixed(1) + '" x2="' + (w - padR) + '" y2="' + zeroY.toFixed(1) + '" stroke="#242B34" stroke-dasharray="3 4"/>' +
       lines + endMarkers +
@@ -2053,7 +2211,7 @@
             : '<span class="badge neutral">active</span>';
       var roleBadge = acc.role === 'parent' ? '<span class="badge neutral">parent</span>' : acc.role === 'slave' ? '<span class="badge neutral">slave</span>' : '';
       var alerts = '';
-      if (st.ddBreached) alerts += '<div style="background:var(--loss-dim); color:var(--loss); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">Drawdown limit exceeded — this account would be breached.</div>';
+      if (st.ddBreached) alerts += '<div style="background:var(--loss-dim); color:var(--loss); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">Drawdown limit exceeded — this account would be breached' + (st.ddType === 'trailing' && st.usedMae && st.trailingWorstEver > st.trailingUsed + 0.5 ? ' (mark-to-market — it happened mid-trade and your closed P&amp;L alone doesn\'t show it)' : '') + '.</div>';
       else if (st.ddPct !== null && st.ddPct >= 75) alerts += '<div style="background:var(--warn-dim); color:var(--warn); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">' + Math.round(st.ddPct) + '% of your ' + st.ddType + ' drawdown is used. Size down.</div>';
       if (st.dailyBreached) alerts += '<div style="background:var(--loss-dim); color:var(--loss); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">A single day (' + fmtDate(st.worstDayDate) + ', ' + fmtMoney(st.worstDay) + ') broke your daily loss limit.</div>';
       if (st.passed) alerts += '<div style="background:var(--gain-dim); color:var(--gain); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:10px;">Profit target reached.</div>';
@@ -2271,17 +2429,34 @@
       '</div>';
   }
 
-  function aiAuditorPanel() {
+  function aiCoachChatPanel() {
     var hasKey = !!getAiApiKey();
-    var status = state.aiAudit.status;
+    var chat = state.aiChat;
+    var thread = chat.thread;
+    var loading = chat.status === 'loading';
     return '<div class="panel">' +
-      '<div class="panel-title">AI Session Auditor <span style="font-weight:400; font-size:10px; color:var(--warn); text-transform:none; letter-spacing:0;">beta · opt-in · your own API key</span></div>' +
-      '<div style="font-size:12px; color:var(--text-dim); line-height:1.6; margin-bottom:12px;">Sends a summary of your recent trades plus your written trading plan directly from this browser to Claude, using your own Anthropic API key. Nothing goes through any RAVE server — there isn\'t one. Set your key and (optionally) your trading plan in Settings first.</div>' +
+      '<div class="panel-title">AI Coach <span style="font-weight:400; font-size:10px; color:var(--warn); text-transform:none; letter-spacing:0;">beta · opt-in · your own API key</span></div>' +
+      '<div style="font-size:12px; color:var(--text-dim); line-height:1.6; margin-bottom:12px;">A real conversation with Claude about your trading — it sees a summary of your recent trades and your written trading plan, and remembers what you\'ve said earlier in this chat, so you can ask follow-up questions. Sent directly from this browser using your own Anthropic API key; nothing routes through a RAVE server. Set your key (and optionally a trading plan) in Settings first.</div>' +
       (!hasKey
-        ? '<div style="font-size:12px; color:var(--text-faint);">No Anthropic API key set. Add one in Settings → AI Session Auditor to enable this.</div>'
-        : '<button class="btn-primary" style="width:auto;" id="runAiAuditBtn"' + (status === 'loading' ? ' disabled' : '') + '>' + (status === 'loading' ? 'Auditing…' : 'Run AI Audit') + '</button>') +
-      (status === 'error' ? '<div style="margin-top:12px; padding:10px 12px; background:var(--loss-dim); border-radius:8px; font-size:12px; color:var(--loss); line-height:1.5;">' + esc(state.aiAudit.error) + '</div>' : '') +
-      (status === 'done' ? '<div style="margin-top:14px; padding:14px; background:var(--surface-2); border-radius:10px; font-size:13px; line-height:1.65; white-space:pre-wrap;">' + esc(state.aiAudit.text) + '</div>' : '') +
+        ? '<div style="font-size:12px; color:var(--text-faint);">No Anthropic API key set. Add one in Settings → AI Coach to enable this.</div>'
+        : (
+          '<div class="coach-log" id="aiChatLog" style="max-height:380px; margin-bottom:10px;">' +
+          thread.map(function (m) {
+            return '<div class="coach-msg ' + (m.role === 'user' ? 'user' : 'assistant') + '">' + esc(m.text).replace(/\n/g, '<br>') + '</div>';
+          }).join('') +
+          (loading ? '<div class="coach-msg assistant thinking">Thinking…</div>' : '') +
+          '</div>' +
+          (thread.length === 0 && !loading ? '<div class="coach-suggest">' +
+            ['Audit my last 20 trades — grade my discipline A-F', 'What\'s my biggest recurring leak?', 'How should I size down after a loss?']
+              .map(function (q) { return '<button class="ai-suggest-btn" data-q="' + esc(q) + '">' + esc(q) + '</button>'; }).join('') +
+            '</div>' : '') +
+          (chat.status === 'error' ? '<div style="margin-bottom:10px; padding:10px 12px; background:var(--loss-dim); border-radius:8px; font-size:12px; color:var(--loss); line-height:1.5;">' + esc(chat.error) + '</div>' : '') +
+          '<div class="coach-input-bar">' +
+          '<textarea id="aiChatTextInput" rows="1" placeholder="Ask a follow-up…"' + (loading ? ' disabled' : '') + '></textarea>' +
+          '<button class="coach-send-btn" id="aiChatSendBtn"' + (loading ? ' disabled' : '') + '>' + (loading ? '…' : 'Send') + '</button>' +
+          '</div>' +
+          (thread.length ? '<div style="margin-top:8px; text-align:right;"><button id="aiChatClearBtn" style="background:none; border:none; color:var(--text-faint); font-size:11px; text-decoration:underline; cursor:pointer;">Clear chat</button></div>' : '')
+        )) +
       '</div>';
   }
 
@@ -2297,7 +2472,7 @@
       '<div style="font-size:13.5px; line-height:1.65; color:var(--text-dim);">' + esc(read) + '</div>' +
       '</div>' +
       ruleAdherencePanel(trades) +
-      aiAuditorPanel() +
+      aiCoachChatPanel() +
       (insights.length ? '<div class="panel"><div class="panel-title">Detected patterns</div>' +
         insights.slice(0, 8).map(function (ins) {
           return '<div style="padding:12px 0; border-bottom:1px solid var(--line-soft);">' +
@@ -2323,8 +2498,6 @@
       '</div>';
 
     renderCoachLog();
-    var auditBtn = $('#runAiAuditBtn');
-    if (auditBtn) auditBtn.addEventListener('click', runAiAudit);
     $all('.coach-suggest-btn').forEach(function (btn) {
       btn.addEventListener('click', function () { askCoach(btn.dataset.q, trades, insights); });
     });
@@ -2339,6 +2512,28 @@
         if (val) askCoach(val, trades, insights);
       }
     });
+
+    // AI Coach (opt-in, calls Anthropic directly — see sendAiChat below)
+    var aiInput = $('#aiChatTextInput');
+    var aiSendBtn = $('#aiChatSendBtn');
+    if (aiSendBtn) aiSendBtn.addEventListener('click', function () {
+      var val = aiInput.value.trim();
+      if (val) sendAiChat(val);
+    });
+    if (aiInput) aiInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        var val = aiInput.value.trim();
+        if (val) sendAiChat(val);
+      }
+    });
+    $all('.ai-suggest-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () { sendAiChat(btn.dataset.q); });
+    });
+    var aiClearBtn = $('#aiChatClearBtn');
+    if (aiClearBtn) aiClearBtn.addEventListener('click', clearAiChat);
+    var aiLog = $('#aiChatLog');
+    if (aiLog) aiLog.scrollTop = aiLog.scrollHeight;
   }
 
   function askCoach(question, trades, insights) {
@@ -2359,28 +2554,38 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  // ---- AI Session Auditor (beta): calls Anthropic directly from the browser
-  // using the user's own API key. No RAVE server is involved — there isn't
-  // one. See RAVE_PRO_SPEC.md section 4 for the full design + caveats.
-  async function runAiAudit() {
-    var key = getAiApiKey();
-    if (!key) { toast('Set your Anthropic API key in Settings first', true); return; }
+  // ---- AI Coach (beta): a real multi-turn conversation with Claude, called
+  // directly from the browser using the user's own API key. No RAVE server
+  // is involved — there isn't one. Each send re-sends the full thread so far
+  // (Anthropic's Messages API is stateless per-call) plus a system prompt
+  // built fresh from the current trade log, so the assistant can be asked
+  // follow-up questions and stays current if trades change mid-conversation.
+  // See RAVE_PRO_SPEC.md section 4 for the full design + caveats.
+  function buildAiChatSystemPrompt() {
     var recent = active(state.trades).slice().sort(function (a, b) { return (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')); }).slice(0, 20);
-    if (!recent.length) { toast('Log a few trades first', true); return; }
     var plan = (state.settings && state.settings.tradingPlan) || '';
     var summary = recent.map(function (t) {
       return t.date + ' ' + (t.time || '') + ' ' + t.symbol + ' ' + t.direction + ' size=' + t.size + ' entry=' + t.entry + ' exit=' + t.exit +
         ' pnl=' + t.pnl + (t.plannedRisk ? ' plannedRisk=' + t.plannedRisk : '') + (t.mistakes && t.mistakes.length ? ' mistakes=' + t.mistakes.join('/') : '') +
         (t.rulesFollowed === false ? ' [marked: did not follow plan]' : '') + (t.notes ? ' notes="' + t.notes.slice(0, 200) + '"' : '');
     }).join('\n');
-    var prompt = 'You are a trading performance auditor reviewing a trader\'s own logged trades against their own written trading plan. ' +
-      'Grade their overall rule adherence A-F, call out the 2-3 clearest recurring leaks (timing, sizing, emotional tags, setups), and give one concrete, specific thing to change next session. Be direct and concise (under 300 words). This is not financial advice and should not discuss market direction — it is about the trader\'s own process discipline.\n\n' +
+    return 'You are a trading performance coach having an ongoing conversation with a trader about their own logged trades and written trading plan. ' +
+      'Be direct, concise, and specific — reference actual numbers and dates from their trade log where relevant. This is about the trader\'s own process and discipline, not financial advice — do not predict where any market is headed. ' +
+      'The trader can ask follow-up questions, so keep replies conversational (a few sentences to a short paragraph) unless they explicitly ask for a fuller breakdown, like a full audit.\n\n' +
       'TRADING PLAN (may be blank if none provided):\n' + (plan || '(no written plan provided)') + '\n\n' +
-      'RECENT TRADES (most recent first):\n' + summary;
+      'RECENT TRADES (most recent first, up to 20):\n' + (summary || '(no trades logged yet)');
+  }
 
-    state.aiAudit = { status: 'loading', text: '', error: '' };
+  async function sendAiChat(question) {
+    var key = getAiApiKey();
+    if (!key) { toast('Set your Anthropic API key in Settings first', true); return; }
+    if (!question) return;
+    state.aiChat.thread.push({ role: 'user', text: question });
+    state.aiChat.status = 'loading';
+    state.aiChat.error = '';
     render();
     try {
+      var messages = state.aiChat.thread.map(function (m) { return { role: m.role, content: m.text }; });
       var res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -2391,8 +2596,9 @@
         },
         body: JSON.stringify({
           model: 'claude-3-5-haiku-20241022',
-          max_tokens: 700,
-          messages: [{ role: 'user', content: prompt }]
+          max_tokens: 600,
+          system: buildAiChatSystemPrompt(),
+          messages: messages
         })
       });
       var data = await res.json();
@@ -2400,10 +2606,17 @@
         throw new Error((data && data.error && data.error.message) ? data.error.message : ('HTTP ' + res.status));
       }
       var text = (data.content && data.content[0] && data.content[0].text) || '(empty response)';
-      state.aiAudit = { status: 'done', text: text, error: '' };
+      state.aiChat.thread.push({ role: 'assistant', text: text });
+      state.aiChat.status = 'idle';
     } catch (e) {
-      state.aiAudit = { status: 'error', text: '', error: 'Audit failed: ' + (e && e.message ? e.message : 'unknown error') + ' — this can happen if the key is invalid, the browser blocks the direct request, or you\'re offline.' };
+      state.aiChat.status = 'error';
+      state.aiChat.error = 'Message failed: ' + (e && e.message ? e.message : 'unknown error') + ' — this can happen if the key is invalid, the browser blocks the direct request, or you\'re offline.';
     }
+    render();
+  }
+
+  function clearAiChat() {
+    state.aiChat = { status: 'idle', error: '', thread: [] };
     render();
   }
 
@@ -2418,8 +2631,25 @@
     var pillCls = st.state === 'connected' ? 'on' : (st.state === 'connecting' ? 'busy' : (st.state === 'error' ? 'err' : ''));
     var pillText = st.state === 'connected' ? 'Connected' + (st.email ? ' · ' + st.email : '') : st.state === 'connecting' ? 'Connecting…' : st.state === 'error' ? 'Error' : 'Not connected';
 
+    var themeColor = (state.settings && state.settings.themeColor) || DEFAULT_THEME_COLOR;
+
     main.innerHTML =
       '<div class="page-head"><div><div class="page-title">Settings</div><div class="page-sub">Sync, backup, and app info</div></div></div>' +
+
+      '<div class="panel">' +
+      '<div class="panel-title">Theme</div>' +
+      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">Pick an accent color — it recolors buttons, glows, charts, and highlights across the whole app. Synced like your other settings, so it follows you to your other devices.</div>' +
+      '<div class="theme-swatch-row">' +
+      THEME_PRESETS.map(function (p) {
+        var active = p.hex.toLowerCase() === themeColor.toLowerCase();
+        return '<button type="button" class="theme-swatch' + (active ? ' active' : '') + '" data-hex="' + p.hex + '" style="background:' + p.hex + ';" title="' + esc(p.name) + '" aria-label="' + esc(p.name) + '"></button>';
+      }).join('') +
+      '</div>' +
+      '<div style="display:flex; align-items:center; gap:14px; margin-top:14px; flex-wrap:wrap;">' +
+      '<label style="font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:8px;">Custom<input type="color" id="themeCustomInput" value="' + esc(themeColor) + '"></label>' +
+      '<button class="btn-ghost" id="themeResetBtn" style="width:auto;">Reset to default</button>' +
+      '</div>' +
+      '</div>' +
 
       '<div class="panel">' +
       '<div class="panel-title">Google Drive sync <span class="sync-status-pill ' + pillCls + '"><span class="dot"></span>' + esc(pillText) + '</span></div>' +
@@ -2470,8 +2700,8 @@
       '</div>' +
 
       '<div class="panel">' +
-      '<div class="panel-title">AI Session Auditor <span style="font-weight:400; font-size:10px; color:var(--warn); text-transform:none; letter-spacing:0;">beta · opt-in</span></div>' +
-      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">Optional: paste your own Anthropic API key to enable "Run AI Audit" in Coach, which sends your recent trades + trading plan directly from this browser to Claude. The key is stored only in this browser\'s local storage — it is deliberately excluded from Drive sync and JSON export, so it never leaves this device on its own. Get a key at <span style="color:var(--text-dim);">console.anthropic.com</span>.</div>' +
+      '<div class="panel-title">AI Coach <span style="font-weight:400; font-size:10px; color:var(--warn); text-transform:none; letter-spacing:0;">beta · opt-in</span></div>' +
+      '<div style="font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:14px;">Optional: paste your own Anthropic API key to enable a real back-and-forth chat with Claude in the Coach tab — it can see your recent trades + trading plan and remembers earlier turns in the conversation, so you can ask follow-up questions. Sent directly from this browser to Claude. The key is stored only in this browser\'s local storage — it is deliberately excluded from Drive sync and JSON export, so it never leaves this device on its own. Get a key at <span style="color:var(--text-dim);">console.anthropic.com</span>.</div>' +
       '<div class="form-field"><label>Anthropic API Key</label><input id="aiKeyInput" type="password" value="' + esc(getAiApiKey()) + '" placeholder="sk-ant-…" autocomplete="off"></div>' +
       '<div class="form-field full-span"><label>Your written trading plan (optional, synced like your other settings)</label><textarea id="tradingPlanInput" placeholder="Entry criteria, stop rules, sizing rules, times you don\'t trade…">' + esc((state.settings && state.settings.tradingPlan) || '') + '</textarea></div>' +
       '<button class="btn-primary" style="width:auto;" id="saveAiKeyBtn">Save</button>' +
@@ -2497,7 +2727,7 @@
       '</div>' +
 
       '<div class="panel" style="border-color:var(--line-soft);">' +
-      '<div style="font-size:11.5px; color:var(--text-faint); line-height:1.6;">This is your private journal. Nothing here is sent anywhere except, if you choose to connect it, your own Google Drive account. Everything in Coach — insights, rule adherence, the chat — runs entirely on-device. The one exception is the optional AI Session Auditor above: only if you paste your own Anthropic API key and click "Run AI Audit" does a summary of your trades get sent, directly from this browser to Anthropic — nothing routes through a RAVE server, because there isn\'t one.</div>' +
+      '<div style="font-size:11.5px; color:var(--text-faint); line-height:1.6;">This is your private journal. Nothing here is sent anywhere except, if you choose to connect it, your own Google Drive account. The local Coach chat, insights, and rule adherence report all run entirely on-device. The one exception is the optional AI Coach above: only if you paste your own Anthropic API key does a summary of your trades get sent, directly from this browser to Anthropic, so you can chat with Claude about your trading — nothing routes through a RAVE server, because there isn\'t one.</div>' +
       '</div>';
 
     var saveLimitBtn = $('#saveDailyLimitBtn');
@@ -2543,13 +2773,45 @@
       state.settings.tradingPlan = $('#tradingPlanInput').value;
       persistLocal();
       scheduleDriveSync();
-      toast('AI Auditor settings saved (key stays on this device only)');
+      toast('AI Coach settings saved (key stays on this device only)');
       render();
     });
     var clearKeyBtn = $('#clearAiKeyBtn');
     if (clearKeyBtn) clearKeyBtn.addEventListener('click', function () {
       setAiApiKey('');
       toast('API key removed from this device');
+      render();
+    });
+    $all('.theme-swatch').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var hex = btn.dataset.hex;
+        state.settings.themeColor = hex;
+        persistLocal();
+        scheduleDriveSync();
+        toast('Theme updated');
+        render();
+      });
+    });
+    var themeCustomInput = $('#themeCustomInput');
+    if (themeCustomInput) {
+      // Live-preview while the native color picker is open (input fires
+      // continuously as the user drags); persist only once they settle on a
+      // color (change fires when the picker closes).
+      themeCustomInput.addEventListener('input', function () { applyThemeColor(themeCustomInput.value); });
+      themeCustomInput.addEventListener('change', function () {
+        state.settings.themeColor = themeCustomInput.value;
+        persistLocal();
+        scheduleDriveSync();
+        toast('Theme updated');
+        render();
+      });
+    }
+    var themeResetBtn = $('#themeResetBtn');
+    if (themeResetBtn) themeResetBtn.addEventListener('click', function () {
+      state.settings.themeColor = '';
+      persistLocal();
+      scheduleDriveSync();
+      toast('Theme reset to default');
       render();
     });
     $('#gSaveClientBtn').addEventListener('click', function () {
@@ -2714,8 +2976,7 @@
     importSpreadsheetTrades: importSpreadsheetTrades,
     openAccountModal: openAccountModal,
     deleteAccount: deleteAccount,
-    removeWatchlistSymbol: removeWatchlistSymbol,
-    runAiAudit: runAiAudit
+    removeWatchlistSymbol: removeWatchlistSymbol
   };
 
   window.addEventListener('beforeinstallprompt', function (e) {
