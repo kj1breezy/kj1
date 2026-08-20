@@ -16,6 +16,8 @@ A `Watchlist` tab where you track a list of symbols (futures roots, stocks, or c
 
 v1 shipped a volume-profile chart built from your own logged fills instead of live prices; user feedback was that it duplicated information already visible elsewhere on the Dashboard, so it was replaced outright with live pricing (the actual "price of the indices" ask). Each card still shows a de-emphasized one-line summary of your own trade history on that symbol (count, net P&L, win rate) underneath the price.
 
+**Macro Calendar offline-fallback fix (bug fix):** the Macro Calendar tab pulls "this week's" red/orange folder events from Forex Factory's public feed, tried direct then through `corsproxy.io` / `api.allorigins.win` / `api.codetabs.com` relays. All of those routes can fail at once (rate limits, 503s from the feed itself) — when they do, `fetchCalendar()` falls back to a small built-in template of typical weekly US releases (Cash Rate, CPI, PPI, Claims, Retail Sales, Consumer Sentiment). That template used to have its dates hardcoded to the week it was written, so once the live feed started failing consistently it looked frozen on a stale week that never advanced ("still says last week's schedule"). Fixed by computing the template's dates relative to `new Date()` each time it's used (`fallbackWeekDate()`/`buildFallbackEvents()`), so the offline snapshot always lands on the current Sun–Sat week; the panel's freshness line also now says plainly that it's a generic template, not exact release times, when the live feed is unreachable.
+
 ### Data schema
 ```js
 // state.watchlist — array, stored under LocalStore key 'watchlist'

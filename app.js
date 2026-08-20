@@ -1586,18 +1586,33 @@
   ];
   var CORS_RELAYS = [
     function (u) { return 'https://corsproxy.io/?url=' + encodeURIComponent(u); },
-    function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); }
+    function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); },
+    function (u) { return 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u); }
   ];
   var CAL_TTL_MS = 6 * 60 * 60 * 1000;
-  var FALLBACK_EVENTS = [
-    { date: '2026-08-11', time: '12:30am', title: 'Cash Rate', impact: 'High', cur: 'AUD' },
-    { date: '2026-08-12', time: '8:30am', title: 'CPI m/m', impact: 'High', cur: 'USD' },
-    { date: '2026-08-12', time: '8:30am', title: 'Core CPI m/m', impact: 'High', cur: 'USD' },
-    { date: '2026-08-13', time: '8:30am', title: 'PPI m/m', impact: 'High', cur: 'USD' },
-    { date: '2026-08-13', time: '8:30am', title: 'Unemployment Claims', impact: 'Medium', cur: 'USD' },
-    { date: '2026-08-14', time: '8:30am', title: 'Retail Sales m/m', impact: 'Medium', cur: 'USD' },
-    { date: '2026-08-14', time: '10:00am', title: 'Prelim UoM Consumer Sentiment', impact: 'Medium', cur: 'USD' }
-  ];
+  // Offline fallback: used only when the live feed and every relay fail. The
+  // dates are computed relative to "today" (not hardcoded) so this template
+  // always lands on the CURRENT week instead of silently freezing on whatever
+  // week it happened to be written — that frozen-week bug is what made the
+  // calendar look like it "never refreshes."
+  function fallbackWeekDate(offsetFromSunday) {
+    var now = new Date();
+    var sunday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+    var d = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate() + offsetFromSunday);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function buildFallbackEvents() {
+    var tue = fallbackWeekDate(2), wed = fallbackWeekDate(3), thu = fallbackWeekDate(4), fri = fallbackWeekDate(5);
+    return [
+      { date: tue, time: '12:30am', title: 'Cash Rate', impact: 'High', cur: 'AUD' },
+      { date: wed, time: '8:30am', title: 'CPI m/m', impact: 'High', cur: 'USD' },
+      { date: wed, time: '8:30am', title: 'Core CPI m/m', impact: 'High', cur: 'USD' },
+      { date: thu, time: '8:30am', title: 'PPI m/m', impact: 'High', cur: 'USD' },
+      { date: thu, time: '8:30am', title: 'Unemployment Claims', impact: 'Medium', cur: 'USD' },
+      { date: fri, time: '8:30am', title: 'Retail Sales m/m', impact: 'Medium', cur: 'USD' },
+      { date: fri, time: '10:00am', title: 'Prelim UoM Consumer Sentiment', impact: 'Medium', cur: 'USD' }
+    ];
+  }
 
   function normalizeFFEvent(raw) {
     var d = new Date(raw.date);
@@ -1639,7 +1654,7 @@
         }
       } catch (e) { /* try next route */ }
     }
-    state.calendar = FALLBACK_EVENTS.map(function (e) {
+    state.calendar = buildFallbackEvents().map(function (e) {
       return { date: e.date, time: e.time, ts: new Date(e.date + 'T12:00:00').getTime(), title: e.title, impact: e.impact, cur: e.cur, forecast: '', previous: '' };
     });
     state.calendarMeta = { fetchedAt: null, source: 'offline snapshot', live: false };
@@ -1817,7 +1832,7 @@
     }).join('');
     var currencies = ['ALL'].concat(Array.from(new Set((state.calendar || []).filter(function (e) { return e.impact === 'High' || e.impact === 'Medium'; }).map(function (e) { return e.cur; }))).sort());
     var curOpts = currencies.map(function (c) { return '<option value="' + c + '"' + ((state.calCurrency || 'ALL') === c ? ' selected' : '') + '>' + (c === 'ALL' ? 'All currencies' : c) + '</option>'; }).join('');
-    var freshness = meta.live ? (meta.fetchedAt ? 'Live from Forex Factory · updated ' + timeAgo(meta.fetchedAt) : 'Live from Forex Factory') : 'Could not reach the feed — showing a built-in snapshot. Hit refresh to retry.';
+    var freshness = meta.live ? (meta.fetchedAt ? 'Live from Forex Factory · updated ' + timeAgo(meta.fetchedAt) : 'Live from Forex Factory') : 'Could not reach the feed — showing a generic weekly template for this week (not exact release times). Hit refresh to retry.';
     return '<div class="panel">' +
       '<div class="panel-title" style="align-items:center;">' +
       '<span>This week · red &amp; orange folder</span>' +
